@@ -1,0 +1,9 @@
+[workspace]
+
+members = [
+    "crates/syncwise-engine",
+    "crates/syncwise-cli",
+    "apps/desktop/src-tauri"
+]
+
+resolver = "2"

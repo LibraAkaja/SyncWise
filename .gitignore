@@ -1,0 +1,35 @@
+# Rust
+/target/
+**/target/
+
+# Tauri / frontend dependencies
+node_modules/
+**/node_modules/
+apps/desktop/dist/
+apps/desktop/.next/
+
+# Build output
+dist/
+build/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# IDE and operating system
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local databases and temporary files
+*.sqlite
+*.sqlite3
+*.db
+*.tmp
