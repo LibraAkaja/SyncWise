@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 ts-rs = { version = "10", features = ["serde-compat"] }
+walkdir = "2"
 
 [dev-dependencies]
 serde_json = "1"
