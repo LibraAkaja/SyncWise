@@ -286,15 +286,6 @@ function App() {
         </div>
 
         {validatedPair && (
-          <div className="canonical-paths">
-            <span>Validated source</span>
-            <code>{validatedPair.sourceRoot}</code>
-            <span>Validated destination</span>
-            <code>{validatedPair.destinationRoot}</code>
-          </div>
-        )}
-
-        {validatedPair && (
           <section className="scan-section" aria-labelledby="scan-title">
             <div className="scan-heading">
               <h2 id="scan-title">Folder scan</h2>

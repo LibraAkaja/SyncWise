@@ -169,27 +169,6 @@ button:disabled {
   opacity: 0.55;
 }
 
-.canonical-paths {
-  display: grid;
-  min-width: 0;
-  gap: 6px;
-  margin-top: 20px;
-  padding-top: 16px;
-  border-top: 1px solid #e2ebe7;
-  color: #60736e;
-  font-size: 0.78rem;
-}
-
-.canonical-paths code {
-  margin-bottom: 8px;
-  color: #193b35;
-  overflow-wrap: anywhere;
-}
-
-.canonical-paths code:last-child {
-  margin-bottom: 0;
-}
-
 .validation-invalid {
   color: #9d452f;
   overflow-wrap: anywhere;
