@@ -1,136 +1,158 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { open } from "@tauri-apps/plugin-dialog";
+import type { FolderPair } from "./types/generated/FolderPair";
 import "./App.css";
 
-type TaskStatus = "running" | "completed" | "cancelled";
-type DisplayStatus = "ready" | TaskStatus | "error";
+type FolderValidationStatus = "incomplete" | "ready" | "checking" | "valid" | "invalid";
 
-type TaskProgress = {
-  taskId: string;
-  progress: number;
-  status: TaskStatus;
-};
+function messageFromError(error: unknown): string {
+  if (typeof error === "string") {
+    try {
+      const parsed: unknown = JSON.parse(error);
+      if (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        "message" in parsed &&
+        typeof parsed.message === "string"
+      ) {
+        return parsed.message;
+      }
+    } catch {
+      return error;
+    }
+    return error;
+  }
 
-const taskProgressEvent = "syncwise://task-progress";
+  if (error instanceof Error) return error.message;
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+  ) {
+    return error.message;
+  }
+  return "The selected folders could not be validated.";
+}
 
 function App() {
-  const [taskId, setTaskId] = useState<string | null>(null);
-  const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState<DisplayStatus>("ready");
+  const [sourcePath, setSourcePath] = useState("");
+  const [destinationPath, setDestinationPath] = useState("");
+  const [validatedPair, setValidatedPair] = useState<FolderPair | null>(null);
+  const [validationStatus, setValidationStatus] =
+    useState<FolderValidationStatus>("incomplete");
   const [error, setError] = useState("");
-  const activeTaskId = useRef<string | null>(null);
-  const unlisten = useRef<UnlistenFn | null>(null);
 
-  useEffect(() => {
-    return () => unlisten.current?.();
-  }, []);
-
-  function applyProgress(payload: TaskProgress) {
-    if (payload.taskId !== activeTaskId.current) return;
-
-    setProgress(payload.progress);
-    setStatus(payload.status);
-
-    if (payload.status !== "running") {
-      activeTaskId.current = null;
-      setTaskId(null);
-      unlisten.current?.();
-      unlisten.current = null;
+  async function validateFolders(source: string, destination: string) {
+    if (!source || !destination) {
+      setValidationStatus("incomplete");
+      setValidatedPair(null);
+      return;
     }
-  }
 
-  async function startTask() {
+    setValidationStatus("checking");
+    setValidatedPair(null);
     setError("");
-    setProgress(0);
-    setStatus("running");
-
-    const earlyProgress = { current: null as TaskProgress | null };
-
     try {
-      unlisten.current = await listen<TaskProgress>(taskProgressEvent, ({ payload }) => {
-        if (activeTaskId.current === null) {
-          earlyProgress.current = payload;
-          return;
-        }
-
-        applyProgress(payload);
+      const pair = await invoke<FolderPair>("validate_folder_pair", {
+        sourcePath: source,
+        destinationPath: destination,
       });
-
-      const startedTaskId = await invoke<string>("start_demo_task");
-      activeTaskId.current = startedTaskId;
-      setTaskId(startedTaskId);
-
-      if (earlyProgress.current?.taskId === startedTaskId) {
-        applyProgress(earlyProgress.current);
-      }
+      setValidatedPair(pair);
+      setValidationStatus("valid");
     } catch (caughtError) {
-      unlisten.current?.();
-      unlisten.current = null;
-      activeTaskId.current = null;
-      setTaskId(null);
-      setStatus("error");
-      setError(caughtError instanceof Error ? caughtError.message : String(caughtError));
+      setValidationStatus("invalid");
+      setError(messageFromError(caughtError));
     }
   }
 
-  async function cancelTask() {
-    if (!taskId) return;
-
+  async function chooseFolder(side: "source" | "destination") {
+    setError("");
     try {
-      const cancelled = await invoke<boolean>("cancel_demo_task", { taskId });
-      if (!cancelled) setError("The task is no longer active.");
+      const selectedPath = await open({
+        directory: true,
+        multiple: false,
+        title: side === "source" ? "Choose source folder" : "Choose destination folder",
+      });
+      if (typeof selectedPath !== "string") return;
+
+      const nextSource = side === "source" ? selectedPath : sourcePath;
+      const nextDestination = side === "destination" ? selectedPath : destinationPath;
+      setSourcePath(nextSource);
+      setDestinationPath(nextDestination);
+      await validateFolders(nextSource, nextDestination);
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : String(caughtError));
+      setValidationStatus("invalid");
+      setError(messageFromError(caughtError));
     }
   }
 
   return (
     <main className="container">
-      <section className="task-panel" aria-labelledby="app-title">
-        <p className="eyebrow">SYNCWISE / RUNTIME CHECK</p>
-        <h1 id="app-title">Background task</h1>
-        <p className="summary">Rust task progress and cancellation</p>
+      <section className="setup-panel" aria-labelledby="app-title">
+        <p className="eyebrow">SYNCWISE / SETUP</p>
+        <h1 id="app-title">Choose folders</h1>
+        <p className="summary">Select where files come from and where they go.</p>
 
-        <div className={`status status-${status}`} role="status" aria-live="polite">
-          <span className="status-indicator" />
-          <span>
-            {status === "ready" && "Ready"}
-            {status === "running" && "Running"}
-            {status === "completed" && "Completed"}
-            {status === "cancelled" && "Cancelled"}
-            {status === "error" && "Could not start"}
-          </span>
-          {taskId && <code>{taskId}</code>}
+        <div className="folder-list">
+          <div className="folder-row">
+            <div className="folder-copy">
+              <span className="folder-direction source-direction">FROM</span>
+              <strong>Source</strong>
+              <span className="folder-path">{sourcePath || "No source folder selected"}</span>
+            </div>
+            <button type="button" onClick={() => chooseFolder("source")}>
+              Choose source
+            </button>
+          </div>
+
+          <div className="folder-row">
+            <div className="folder-copy">
+              <span className="folder-direction destination-direction">TO</span>
+              <strong>Destination</strong>
+              <span className="folder-path">
+                {destinationPath || "No destination folder selected"}
+              </span>
+            </div>
+            <button type="button" onClick={() => chooseFolder("destination")}>
+              Choose destination
+            </button>
+          </div>
         </div>
 
         <div
-          className="progress-track"
-          role="progressbar"
-          aria-label="Task progress"
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={progress}
+          className={`validation validation-${validationStatus}`}
+          role="status"
+          aria-live="polite"
         >
-          <span className="progress-fill" style={{ width: `${progress}%` }} />
-        </div>
-        <div className="progress-label">
-          <span>Progress</span>
-          <span>{progress}%</span>
-        </div>
-
-        <div className="actions">
-          <button type="button" onClick={startTask} disabled={status === "running"}>
-            Start task
-          </button>
-          {status === "running" && (
-            <button className="cancel-button" type="button" onClick={cancelTask}>
-              Cancel
-            </button>
-          )}
+          <span className="status-indicator" />
+          <span>
+            {validationStatus === "incomplete" && "Choose both folders to validate the pair."}
+            {validationStatus === "ready" && "Folders have changed. Validate them before continuing."}
+            {validationStatus === "checking" && "Checking folder paths…"}
+            {validationStatus === "valid" && "Folder pair is valid."}
+            {validationStatus === "invalid" && (error || "Folder pair is invalid.")}
+          </span>
         </div>
 
-        {error && <p className="error-message">{error}</p>}
+        <button
+          className="validate-button"
+          type="button"
+          disabled={!sourcePath || !destinationPath || validationStatus === "checking"}
+          onClick={() => validateFolders(sourcePath, destinationPath)}
+        >
+          Validate folders
+        </button>
+
+        {validatedPair && (
+          <div className="canonical-paths">
+            <span>Validated source</span>
+            <code>{validatedPair.sourceRoot}</code>
+            <span>Validated destination</span>
+            <code>{validatedPair.destinationRoot}</code>
+          </div>
+        )}
       </section>
     </main>
   );
