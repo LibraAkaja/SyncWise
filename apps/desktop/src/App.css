@@ -34,7 +34,7 @@ body {
 }
 
 .setup-panel {
-  width: min(100%, 520px);
+  width: min(100%, 680px);
   padding: 36px;
   border: 1px solid #d4e0dc;
   border-radius: 8px;
@@ -169,10 +169,6 @@ button:disabled {
   opacity: 0.55;
 }
 
-.validate-button {
-  margin-top: 18px;
-}
-
 .canonical-paths {
   display: grid;
   min-width: 0;
@@ -199,6 +195,147 @@ button:disabled {
   overflow-wrap: anywhere;
 }
 
+.scan-section {
+  margin-top: 26px;
+  padding-top: 20px;
+  border-top: 1px solid #e2ebe7;
+}
+
+.scan-heading,
+.scan-result-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.scan-heading h2,
+.scan-result-heading h3 {
+  margin: 0;
+  color: #193b35;
+  font-size: 1rem;
+  font-weight: 650;
+}
+
+.scan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.scan-actions button {
+  min-height: 38px;
+  padding: 0 12px;
+}
+
+.cancel-button {
+  border-color: #d8a092;
+  background: #fff;
+  color: #9d452f;
+}
+
+.cancel-button:hover:not(:disabled) {
+  background: #fff5f1;
+}
+
+.scan-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  color: #526b64;
+  font-size: 0.88rem;
+  overflow-wrap: anywhere;
+}
+
+.scan-running .status-indicator {
+  background: #16836d;
+  box-shadow: 0 0 0 4px #dcefe9;
+}
+
+.scan-error,
+.scan-issue {
+  color: #9d452f;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.scan-progress-list,
+.scan-results {
+  display: grid;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.scan-progress-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) repeat(3, auto);
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid #e7eeeb;
+  color: #60736e;
+  font-size: 0.82rem;
+}
+
+.scan-progress-row strong {
+  color: #193b35;
+}
+
+.scan-result {
+  min-width: 0;
+  padding-top: 14px;
+  border-top: 1px solid #e7eeeb;
+}
+
+.scan-result-heading span,
+.preview-note {
+  color: #71817c;
+  font-size: 0.78rem;
+}
+
+.scan-issue-count {
+  margin: 8px 0;
+  color: #9d452f;
+  font-size: 0.82rem;
+}
+
+.file-preview {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.file-preview li {
+  display: flex;
+  min-width: 0;
+  justify-content: space-between;
+  gap: 12px;
+  color: #344f48;
+  font-size: 0.8rem;
+}
+
+.file-preview li span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview code {
+  flex: none;
+  color: #71817c;
+  font-size: 0.75rem;
+}
+
+.preview-note {
+  margin: 8px 0 0;
+}
+
+.scan-issue {
+  margin: 8px 0 0;
+}
+
 @media (max-width: 480px) {
   .container {
     padding: 18px;
@@ -215,6 +352,15 @@ button:disabled {
 
   .folder-path {
     max-width: 100%;
+  }
+
+  .scan-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .scan-progress-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
