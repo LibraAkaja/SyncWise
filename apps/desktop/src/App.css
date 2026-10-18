@@ -33,7 +33,7 @@ body {
   background-size: 32px 32px, 32px 32px, auto;
 }
 
-.task-panel {
+.setup-panel {
   width: min(100%, 520px);
   padding: 36px;
   border: 1px solid #d4e0dc;
@@ -63,17 +63,18 @@ h1 {
   color: #60736e;
 }
 
-.status {
+.validation {
   display: flex;
   min-height: 44px;
   align-items: center;
   gap: 10px;
-  margin-bottom: 18px;
-  padding: 0 12px;
+  margin-top: 20px;
+  padding: 10px 12px;
   border: 1px solid #e2ebe7;
   border-radius: 4px;
   background: #f7faf8;
   font-size: 0.9rem;
+  overflow-wrap: anywhere;
 }
 
 .status-indicator {
@@ -84,55 +85,61 @@ h1 {
   background: #899c96;
 }
 
-.status-running .status-indicator {
-  background: #16836d;
-  box-shadow: 0 0 0 4px #dcefe9;
-}
-
-.status-completed .status-indicator {
+.validation-valid .status-indicator {
   background: #16836d;
 }
 
-.status-cancelled .status-indicator,
-.status-error .status-indicator {
+.validation-invalid .status-indicator {
   background: #c35d42;
 }
 
-.status code {
-  overflow: hidden;
-  margin-left: auto;
-  color: #73847f;
-  font-size: 0.75rem;
-  text-overflow: ellipsis;
+.folder-list {
+  display: grid;
+  gap: 12px;
 }
 
-.progress-track {
-  height: 10px;
-  overflow: hidden;
-  border-radius: 2px;
-  background: #e6eeea;
-}
-
-.progress-fill {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #16836d;
-  transition: width 120ms linear;
-}
-
-.progress-label {
+.folder-row {
   display: flex;
+  min-width: 0;
+  align-items: center;
   justify-content: space-between;
-  margin-top: 8px;
-  color: #60736e;
-  font-size: 0.8rem;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid #e2ebe7;
+  border-radius: 4px;
+  background: #fbfcfb;
 }
 
-.actions {
-  display: flex;
-  gap: 10px;
-  margin-top: 28px;
+.folder-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.folder-direction {
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.source-direction {
+  color: #126b59;
+}
+
+.destination-direction {
+  color: #a04f39;
+}
+
+.folder-copy strong {
+  font-size: 0.9rem;
+}
+
+.folder-path {
+  max-width: 290px;
+  overflow: hidden;
+  color: #71817c;
+  font-size: 0.8rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 button {
@@ -162,20 +169,33 @@ button:disabled {
   opacity: 0.55;
 }
 
-.cancel-button {
-  border-color: #d8a092;
-  background: #fff;
-  color: #9d452f;
+.validate-button {
+  margin-top: 18px;
 }
 
-.cancel-button:hover:not(:disabled) {
-  background: #fff5f1;
+.canonical-paths {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid #e2ebe7;
+  color: #60736e;
+  font-size: 0.78rem;
 }
 
-.error-message {
-  margin: 16px 0 0;
+.canonical-paths code {
+  margin-bottom: 8px;
+  color: #193b35;
+  overflow-wrap: anywhere;
+}
+
+.canonical-paths code:last-child {
+  margin-bottom: 0;
+}
+
+.validation-invalid {
   color: #9d452f;
-  font-size: 0.875rem;
   overflow-wrap: anywhere;
 }
 
@@ -184,8 +204,17 @@ button:disabled {
     padding: 18px;
   }
 
-  .task-panel {
+  .setup-panel {
     padding: 26px 22px;
+  }
+
+  .folder-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .folder-path {
+    max-width: 100%;
   }
 }
 
