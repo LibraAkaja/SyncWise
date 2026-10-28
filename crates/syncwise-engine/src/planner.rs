@@ -9,8 +9,8 @@ use fs2::available_space;
 use tempfile::NamedTempFile;
 
 use crate::{
-    FileEntry, Plan, PlanIssue, PlanIssueCode, PlanItem, PlanItemKind, ScanIssueCode, ScanResult,
-    SyncError, SyncErrorCode, normalize_name, validate_folder_pair,
+    FileEntry, MatchingOptions, Plan, PlanIssue, PlanIssueCode, PlanItem, PlanItemKind,
+    ScanIssueCode, ScanResult, SyncError, SyncErrorCode, match_files, validate_folder_pair,
 };
 
 static NEXT_PLAN_ID: AtomicU64 = AtomicU64::new(1);
@@ -61,13 +61,16 @@ pub fn generate_plan(source: &ScanResult, destination: &ScanResult) -> Result<Pl
             .filter_map(|issue| issue.relative_path.as_deref()),
     );
 
-    let mut normalized_destination_names: HashMap<String, Vec<&str>> = HashMap::new();
-    for file in &destination.files {
-        normalized_destination_names
-            .entry(normalized_file_name(file))
-            .or_default()
-            .push(&file.relative_path);
-    }
+    let matching = match_files(
+        &source.files,
+        &destination.files,
+        &MatchingOptions::default(),
+    )?;
+    let candidates_by_path: HashMap<_, _> = matching
+        .matches
+        .iter()
+        .map(|entry| (entry.source_relative_path.as_str(), &entry.candidates))
+        .collect();
 
     let mut source_files: Vec<&FileEntry> = source.files.iter().collect();
     source_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
@@ -102,13 +105,16 @@ pub fn generate_plan(source: &ScanResult, destination: &ScanResult) -> Result<Pl
                 ),
             )
         } else {
-            let normalized_name = normalized_file_name(file);
-            match normalized_destination_names.get(&normalized_name) {
-                Some(matches) if !matches.is_empty() => (
+            match candidates_by_path
+                .get(file.relative_path.as_str())
+                .and_then(|candidates| candidates.first())
+            {
+                Some(candidate) => (
                     PlanItemKind::PossibleDuplicate,
                     Some(format!(
-                        "A destination file has the same normalized name: {}. Review manually; names do not prove identical content.",
-                        matches[0]
+                        "Possible match: {}. {} Names do not prove identical content.",
+                        candidate.destination_relative_path,
+                        candidate.reasons.join(" ")
                     )),
                 ),
                 _ => {
@@ -168,6 +174,7 @@ pub fn generate_plan(source: &ScanResult, destination: &ScanResult) -> Result<Pl
         required_bytes,
         available_bytes,
         can_execute,
+        matching: Some(matching),
     })
 }
 
@@ -207,15 +214,6 @@ fn scan_issues(scan: &ScanResult, is_source: bool) -> Vec<PlanIssue> {
             }
         })
         .collect()
-}
-
-fn normalized_file_name(file: &FileEntry) -> String {
-    let name = file
-        .relative_path
-        .rsplit(['/', '\\'])
-        .next()
-        .unwrap_or(&file.relative_path);
-    normalize_name(name)
 }
 
 fn destination_path_available(root: &Path, relative_path: &str) -> bool {
