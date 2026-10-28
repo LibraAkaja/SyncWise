@@ -9,6 +9,11 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use walkdir::{DirEntry, WalkDir};
 
+mod planner;
+pub use planner::generate_plan;
+mod copier;
+pub use copier::{copy_approved_items, inspect_recovery, resume_run, run_snapshot_path};
+
 /// Normalize a filename for basic comparisons.
 /// This is an initial implementation, not the final matching algorithm.
 pub fn normalize_name(name: &str) -> String {
@@ -95,7 +100,32 @@ pub struct PlanItem {
     pub destination_relative_path: String,
     #[ts(type = "number")]
     pub size_bytes: u64,
+    #[ts(type = "number | null")]
+    pub source_modified_time_unix_ms: Option<i64>,
     pub kind: PlanItemKind,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum PlanIssueCode {
+    SourceScanIncomplete,
+    DestinationScanIncomplete,
+    DestinationNotWritable,
+    InsufficientSpace,
+    AvailableSpaceUnknown,
+    InvalidRelativePath,
+    SizeOverflow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct PlanIssue {
+    pub code: PlanIssueCode,
+    pub message: String,
+    pub blocking: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -106,6 +136,88 @@ pub struct Plan {
     pub source_root: String,
     pub destination_root: String,
     pub items: Vec<PlanItem>,
+    pub issues: Vec<PlanIssue>,
+    #[ts(type = "number")]
+    pub required_bytes: u64,
+    #[ts(type = "number | null")]
+    pub available_bytes: Option<u64>,
+    pub can_execute: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum CopyState {
+    Planned,
+    Revalidated,
+    Copying,
+    Flushed,
+    Finalizing,
+    Verified,
+    Finalized,
+    Done,
+    Failed,
+    Skipped,
+    NeedsRescan,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct JournalEntry {
+    pub run_id: String,
+    pub item_id: String,
+    pub source_relative_path: String,
+    pub destination_relative_path: String,
+    pub state: CopyState,
+    pub temp_relative_path: Option<String>,
+    #[ts(type = "number")]
+    pub bytes_written: u64,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct CopyItemResult {
+    pub item_id: String,
+    pub state: CopyState,
+    #[ts(type = "number")]
+    pub bytes_written: u64,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct CopyProgress {
+    pub run_id: String,
+    pub item_id: String,
+    pub state: CopyState,
+    #[ts(type = "number")]
+    pub bytes_written: u64,
+    #[ts(type = "number")]
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct CopyReport {
+    pub run_id: String,
+    pub dry_run: bool,
+    pub cancelled: bool,
+    pub items: Vec<CopyItemResult>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct RecoveryReport {
+    pub interrupted_items: Vec<JournalEntry>,
+    pub orphaned_temp_paths: Vec<String>,
+    pub saved_run_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -140,6 +252,9 @@ pub enum SyncErrorCode {
     InvalidInput,
     IoError,
     ScanRootUnavailable,
+    PlanNotExecutable,
+    JournalUnavailable,
+    InsufficientSpace,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -473,8 +588,14 @@ mod tests {
                 source_relative_path: "track.mp3".into(),
                 destination_relative_path: "track.mp3".into(),
                 size_bytes: 128,
+                source_modified_time_unix_ms: None,
                 kind: PlanItemKind::Copy,
+                reason: None,
             }],
+            issues: Vec::new(),
+            required_bytes: 128,
+            available_bytes: Some(1024),
+            can_execute: true,
         };
         let serialized = serde_json::to_string(&plan).unwrap();
         let round_tripped: Plan = serde_json::from_str(&serialized).unwrap();
@@ -491,7 +612,15 @@ mod tests {
 
         FolderPair::export_all_to(&output_directory).unwrap();
         FileEntry::export_all_to(&output_directory).unwrap();
+        PlanItem::export_all_to(&output_directory).unwrap();
         Plan::export_all_to(&output_directory).unwrap();
+        PlanIssue::export_all_to(&output_directory).unwrap();
+        CopyState::export_all_to(&output_directory).unwrap();
+        JournalEntry::export_all_to(&output_directory).unwrap();
+        CopyItemResult::export_all_to(&output_directory).unwrap();
+        CopyProgress::export_all_to(&output_directory).unwrap();
+        CopyReport::export_all_to(&output_directory).unwrap();
+        RecoveryReport::export_all_to(&output_directory).unwrap();
         Decision::export_all_to(&output_directory).unwrap();
         RunState::export_all_to(&output_directory).unwrap();
         SyncError::export_all_to(&output_directory).unwrap();
