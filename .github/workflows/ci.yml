@@ -37,3 +37,6 @@ jobs:
       - name: Build frontend
         working-directory: apps/desktop
         run: pnpm build
+      - name: Test review workflow
+        working-directory: apps/desktop
+        run: pnpm test

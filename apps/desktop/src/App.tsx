@@ -6,6 +6,9 @@ import type { FolderPair } from "./types/generated/FolderPair";
 import type { ScanProgress } from "./types/generated/ScanProgress";
 import type { ScanResult } from "./types/generated/ScanResult";
 import type { SyncError } from "./types/generated/SyncError";
+import type { Plan } from "./types/generated/Plan";
+import type { DecisionState } from "./types/generated/DecisionState";
+import Review from "./Review";
 import "./App.css";
 
 type FolderValidationStatus = "incomplete" | "checking" | "valid" | "invalid";
@@ -24,6 +27,8 @@ type ScanCompletionEvent = {
   destination: ScanResult | null;
   error: SyncError | null;
   cancelled: boolean;
+  plan: Plan | null;
+  decisions: DecisionState | null;
 };
 
 type ScanResults = {
@@ -82,6 +87,8 @@ function App() {
     destination: emptyScanProgress,
   });
   const [scanResults, setScanResults] = useState<ScanResults | null>(null);
+  const [review, setReview] = useState<{ plan: Plan; decisions: DecisionState } | null>(null);
+  const [showReview, setShowReview] = useState(false);
   const activeScanId = useRef<string | null>(null);
   const unlistenProgress = useRef<UnlistenFn | null>(null);
   const unlistenCompletion = useRef<UnlistenFn | null>(null);
@@ -107,6 +114,10 @@ function App() {
     setScanStatus(
       payload.error ? "error" : payload.cancelled ? "cancelled" : "completed",
     );
+    if (!payload.cancelled && !payload.error && payload.plan && payload.decisions) {
+      setReview({ plan: payload.plan, decisions: payload.decisions });
+      setShowReview(true);
+    }
     stopListening();
   }
 
@@ -120,6 +131,7 @@ function App() {
   }, []);
 
   async function validateFolders(source: string, destination: string) {
+    setReview(null); setShowReview(false);
     setScanStatus("idle");
     setScanResults(null);
     setScanError("");
@@ -168,6 +180,7 @@ function App() {
 
   async function startScan() {
     if (!validatedPair) return;
+    setReview(null); setShowReview(false);
 
     setScanStatus("running");
     setScanError("");
@@ -230,6 +243,10 @@ function App() {
     }
   }
 
+  if (showReview && review) {
+    return <Review key={review.plan.id} plan={review.plan} initialDecisions={review.decisions} onBack={(decisions) => { setReview({ ...review, decisions }); setShowReview(false); }} />;
+  }
+
   return (
     <main className="container">
       <section className="setup-panel" aria-labelledby="app-title">
@@ -290,6 +307,7 @@ function App() {
             <div className="scan-heading">
               <h2 id="scan-title">Folder scan</h2>
               <div className="scan-actions">
+                {review && <button type="button" onClick={() => setShowReview(true)}>Review results</button>}
                 <button
                   type="button"
                   onClick={startScan}

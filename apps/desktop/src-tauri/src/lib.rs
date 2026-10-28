@@ -8,10 +8,13 @@ use std::{
 };
 
 use syncwise_engine::{
-    FolderPair, ScanProgress, ScanResult, SyncError, scan_directory,
-    validate_folder_pair as validate_folder_roots,
+    DecisionState, FolderPair, Plan, ScanProgress, ScanResult, SyncError,
+    generate_plan_with_cancellation, scan_directory, validate_folder_pair as validate_folder_roots,
 };
+use tauri::Manager;
 use tauri::{AppHandle, Emitter, State};
+
+mod review;
 
 static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -36,6 +39,8 @@ struct ScanCompletionEvent {
     destination: Option<ScanResult>,
     error: Option<SyncError>,
     cancelled: bool,
+    plan: Option<Plan>,
+    decisions: Option<DecisionState>,
 }
 
 #[tauri::command]
@@ -54,6 +59,13 @@ fn start_scan(
     destination_path: String,
 ) -> Result<String, SyncError> {
     let folder_pair = validate_folder_roots(Path::new(&source_path), Path::new(&destination_path))?;
+    app.state::<Mutex<review::ReviewStore>>()
+        .lock()
+        .map_err(|_| SyncError {
+            code: syncwise_engine::SyncErrorCode::InvalidInput,
+            message: "Review state is unavailable.".into(),
+        })?
+        .session = None;
     let scan_id = format!("scan-{}", NEXT_SCAN_ID.fetch_add(1, Ordering::Relaxed));
     let cancellation = Arc::new(AtomicBool::new(false));
     tasks
@@ -98,9 +110,34 @@ fn start_scan(
             Err(scan_error) => error = Some(scan_error),
         }
 
-        let cancelled = cancellation.load(Ordering::Relaxed)
+        let mut cancelled = cancellation.load(Ordering::Relaxed)
             || source.as_ref().is_some_and(|result| result.cancelled)
             || destination.as_ref().is_some_and(|result| result.cancelled);
+        let mut plan = None;
+        let mut decisions = None;
+        if !cancelled
+            && error.is_none()
+            && let (Some(source), Some(destination)) = (&source, &destination)
+        {
+            let result = generate_plan_with_cancellation(source, destination, &cancellation)
+                .and_then(|generated| {
+                    let store = app.state::<Mutex<review::ReviewStore>>();
+                    let state =
+                        review::install(&app, &store, generated.clone(), &destination.files)?;
+                    decisions = Some(state);
+                    Ok(generated)
+                });
+            match result {
+                Ok(generated) => plan = Some(generated),
+                Err(failure) => error = Some(failure),
+            }
+        }
+        if cancellation.load(Ordering::Relaxed) {
+            cancelled = true;
+            plan = None;
+            decisions = None;
+            error = None;
+        }
         let _ = app.emit(
             "syncwise://scan-complete",
             ScanCompletionEvent {
@@ -109,6 +146,8 @@ fn start_scan(
                 destination,
                 error,
                 cancelled,
+                plan,
+                decisions,
             },
         );
 
@@ -162,10 +201,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(ScanTaskManager::default())
+        .manage(Mutex::new(review::ReviewStore::default()))
         .invoke_handler(tauri::generate_handler![
             validate_folder_pair,
             start_scan,
-            cancel_scan
+            cancel_scan,
+            review::review_decisions,
+            review::review_preflight,
+            review::reset_review_memory
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
