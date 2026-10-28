@@ -10,7 +10,7 @@ use ts_rs::TS;
 use walkdir::{DirEntry, WalkDir};
 
 mod planner;
-pub use planner::generate_plan;
+pub use planner::{generate_plan, generate_plan_with_cancellation};
 mod copier;
 pub use copier::{copy_approved_items, inspect_recovery, resume_run, run_snapshot_path};
 mod matching;
@@ -18,6 +18,8 @@ pub use matching::{
     CandidateMatch, FileMatches, MatchGroup, MatchLabel, MatchingOptions, MatchingReport,
     match_files, match_files_with_cancellation, normalize_title,
 };
+mod review;
+pub use review::{DecisionChange, DecisionState, ReviewPreflight, ReviewSession};
 
 /// Normalize a filename for basic comparisons.
 /// This is an initial implementation, not the final matching algorithm.
@@ -625,6 +627,9 @@ mod tests {
         Plan::export_all_to(&output_directory).unwrap();
         MatchingOptions::export_all_to(&output_directory).unwrap();
         MatchingReport::export_all_to(&output_directory).unwrap();
+        DecisionChange::export_all_to(&output_directory).unwrap();
+        DecisionState::export_all_to(&output_directory).unwrap();
+        ReviewPreflight::export_all_to(&output_directory).unwrap();
         PlanIssue::export_all_to(&output_directory).unwrap();
         CopyState::export_all_to(&output_directory).unwrap();
         JournalEntry::export_all_to(&output_directory).unwrap();

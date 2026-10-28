@@ -2,7 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::Path,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 use fs2::available_space;
@@ -10,13 +10,22 @@ use tempfile::NamedTempFile;
 
 use crate::{
     FileEntry, MatchingOptions, Plan, PlanIssue, PlanIssueCode, PlanItem, PlanItemKind,
-    ScanIssueCode, ScanResult, SyncError, SyncErrorCode, match_files, validate_folder_pair,
+    ScanIssueCode, ScanResult, SyncError, SyncErrorCode, match_files_with_cancellation,
+    validate_folder_pair,
 };
 
 static NEXT_PLAN_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Build a preview. Similar names are advisory and never become automatic skips.
 pub fn generate_plan(source: &ScanResult, destination: &ScanResult) -> Result<Plan, SyncError> {
+    generate_plan_with_cancellation(source, destination, &AtomicBool::new(false))
+}
+
+pub fn generate_plan_with_cancellation(
+    source: &ScanResult,
+    destination: &ScanResult,
+    cancellation: &AtomicBool,
+) -> Result<Plan, SyncError> {
     if source.cancelled || destination.cancelled {
         return Err(SyncError::new(
             SyncErrorCode::InvalidInput,
@@ -61,10 +70,11 @@ pub fn generate_plan(source: &ScanResult, destination: &ScanResult) -> Result<Pl
             .filter_map(|issue| issue.relative_path.as_deref()),
     );
 
-    let matching = match_files(
+    let matching = match_files_with_cancellation(
         &source.files,
         &destination.files,
         &MatchingOptions::default(),
+        cancellation,
     )?;
     let candidates_by_path: HashMap<_, _> = matching
         .matches
@@ -78,6 +88,12 @@ pub fn generate_plan(source: &ScanResult, destination: &ScanResult) -> Result<Pl
     let mut items = Vec::with_capacity(source_files.len());
     let mut required_bytes = 0_u64;
     for (index, file) in source_files.iter().enumerate() {
+        if cancellation.load(Ordering::Relaxed) {
+            return Err(SyncError::new(
+                SyncErrorCode::OperationCancelled,
+                "Planning was cancelled.",
+            ));
+        }
         let id = format!("item-{:06}", index + 1);
         if !is_safe_relative_path(&file.relative_path) {
             issues.push(PlanIssue {

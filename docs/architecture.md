@@ -14,3 +14,5 @@ Engine types are the source of truth for the Rust-to-TypeScript contract. The en
 See [Safe Copy and Recovery](safe-copy.md) for CLI usage, saved-run retry semantics, the automated safety matrix, and outstanding hardware validation.
 
 See [Advisory Filename Matching](matching.md) for candidate indexing, evidence tiers, the labeled-corpus gate, and scaling limits. Matching emits suggestions only; approval remains a separate decision.
+
+See [Review Workflow](review.md) for Rust-owned decisions, local rejection memory, virtualized keyboard review, and the gated preflight confirmation.
