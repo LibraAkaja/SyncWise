@@ -10,3 +10,5 @@ SyncWise keeps file operations and decisions in Rust so the UI cannot become an 
 - `fixtures` holds deterministic generators and small labeled matching data. Large generated files are created during tests and are not committed.
 
 Engine types are the source of truth for the Rust-to-TypeScript contract. The engine tests export bindings into `apps/desktop/src/types/generated`; do not edit those generated files by hand.
+
+See [Safe Copy and Recovery](safe-copy.md) for CLI usage, saved-run retry semantics, the automated safety matrix, and outstanding hardware validation.
