@@ -12,3 +12,5 @@ SyncWise keeps file operations and decisions in Rust so the UI cannot become an 
 Engine types are the source of truth for the Rust-to-TypeScript contract. The engine tests export bindings into `apps/desktop/src/types/generated`; do not edit those generated files by hand.
 
 See [Safe Copy and Recovery](safe-copy.md) for CLI usage, saved-run retry semantics, the automated safety matrix, and outstanding hardware validation.
+
+See [Advisory Filename Matching](matching.md) for candidate indexing, evidence tiers, the labeled-corpus gate, and scaling limits. Matching emits suggestions only; approval remains a separate decision.

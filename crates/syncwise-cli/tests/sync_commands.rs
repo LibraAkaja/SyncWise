@@ -11,7 +11,7 @@ use serde_json::Value;
 
 fn run_cli(arguments: &[&str]) -> Output {
     let source = match arguments.first().copied() {
-        Some("copy" | "plan") => arguments.get(1).map(PathBuf::from),
+        Some("copy" | "plan" | "match") => arguments.get(1).map(PathBuf::from),
         Some("resume") => arguments
             .get(1)
             .and_then(|path| fs::read(path).ok())
@@ -92,6 +92,55 @@ fn copy_command_defaults_to_dry_run_and_creates_no_journal_or_files() {
     assert_eq!(report["report"]["items"][0]["state"], "planned");
     assert!(!destination.join("new.txt").exists());
     assert!(!destination.join(".syncwise").exists());
+}
+
+#[test]
+fn matching_report_is_read_only_and_scores_never_approve_copying() {
+    let (workspace, source, destination) = fixture_pair();
+    let source_name = "Lina Gray - Winter Light.mp3";
+    let destination_name = "Winter Light - Lina Gray.mp3";
+    fs::write(source.join(source_name), b"new recording").unwrap();
+    fs::write(destination.join(destination_name), b"old recording").unwrap();
+    let matching = run_cli(&[
+        "match",
+        source.to_str().unwrap(),
+        destination.to_str().unwrap(),
+    ]);
+    assert!(
+        matching.status.success(),
+        "{}",
+        String::from_utf8_lossy(&matching.stderr)
+    );
+    let matching: Value = serde_json::from_slice(&matching.stdout).unwrap();
+    let candidate = &matching["matching"]["matches"][0]["candidates"][0];
+    assert_eq!(candidate["label"], "likely_same_song");
+    assert!(!candidate["reasons"].as_array().unwrap().is_empty());
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+    let applied = run_cli(&[
+        "copy",
+        source.to_str().unwrap(),
+        destination.to_str().unwrap(),
+        "--apply",
+        "--journal",
+        workspace
+            .path()
+            .join("state/journal.jsonl")
+            .to_str()
+            .unwrap(),
+    ]);
+    assert!(
+        applied.status.success(),
+        "{}",
+        String::from_utf8_lossy(&applied.stderr)
+    );
+    let applied: Value = serde_json::from_slice(&applied.stdout).unwrap();
+    assert_eq!(applied["plan"]["items"][0]["kind"], "possible_duplicate");
+    assert_eq!(applied["report"]["items"][0]["state"], "skipped");
+    assert!(!destination.join(source_name).exists());
+    assert_eq!(
+        fs::read(destination.join(destination_name)).unwrap(),
+        b"old recording"
+    );
 }
 
 #[test]

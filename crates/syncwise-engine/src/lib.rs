@@ -13,6 +13,11 @@ mod planner;
 pub use planner::generate_plan;
 mod copier;
 pub use copier::{copy_approved_items, inspect_recovery, resume_run, run_snapshot_path};
+mod matching;
+pub use matching::{
+    CandidateMatch, FileMatches, MatchGroup, MatchLabel, MatchingOptions, MatchingReport,
+    match_files, match_files_with_cancellation, normalize_title,
+};
 
 /// Normalize a filename for basic comparisons.
 /// This is an initial implementation, not the final matching algorithm.
@@ -128,7 +133,7 @@ pub struct PlanIssue {
     pub blocking: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(rename_all = "camelCase")]
 pub struct Plan {
@@ -142,6 +147,8 @@ pub struct Plan {
     #[ts(type = "number | null")]
     pub available_bytes: Option<u64>,
     pub can_execute: bool,
+    #[serde(default)]
+    pub matching: Option<MatchingReport>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -255,6 +262,7 @@ pub enum SyncErrorCode {
     PlanNotExecutable,
     JournalUnavailable,
     InsufficientSpace,
+    OperationCancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -596,6 +604,7 @@ mod tests {
             required_bytes: 128,
             available_bytes: Some(1024),
             can_execute: true,
+            matching: None,
         };
         let serialized = serde_json::to_string(&plan).unwrap();
         let round_tripped: Plan = serde_json::from_str(&serialized).unwrap();
@@ -614,6 +623,8 @@ mod tests {
         FileEntry::export_all_to(&output_directory).unwrap();
         PlanItem::export_all_to(&output_directory).unwrap();
         Plan::export_all_to(&output_directory).unwrap();
+        MatchingOptions::export_all_to(&output_directory).unwrap();
+        MatchingReport::export_all_to(&output_directory).unwrap();
         PlanIssue::export_all_to(&output_directory).unwrap();
         CopyState::export_all_to(&output_directory).unwrap();
         JournalEntry::export_all_to(&output_directory).unwrap();

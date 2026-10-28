@@ -10,8 +10,9 @@ use std::{
 };
 
 use syncwise_engine::{
-    CopyProgress, CopyReport, CopyState, Decision, Plan, PlanItemKind, copy_approved_items,
-    generate_plan, inspect_recovery, resume_run, run_snapshot_path, scan_directory,
+    CopyProgress, CopyReport, CopyState, Decision, MatchingOptions, Plan, PlanItemKind,
+    copy_approved_items, generate_plan, inspect_recovery, match_files_with_cancellation,
+    resume_run, run_snapshot_path, scan_directory, validate_folder_pair,
 };
 
 fn main() {
@@ -80,6 +81,28 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
 
     match command.as_str() {
+        "match" => {
+            if apply || journal_path.is_some() {
+                return Err("match is read-only and does not accept --apply or --journal".into());
+            }
+            validate_folder_pair(Path::new(&source), Path::new(&destination))?;
+            let source_scan = scan_directory(Path::new(&source), &cancellation, |_| {})?;
+            let destination_scan = scan_directory(Path::new(&destination), &cancellation, |_| {})?;
+            let matching = match_files_with_cancellation(
+                &source_scan.files,
+                &destination_scan.files,
+                &MatchingOptions::default(),
+                &cancellation,
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "matching": matching,
+                    "sourceScanIssues": source_scan.issues,
+                    "destinationScanIssues": destination_scan.issues,
+                }))?
+            );
+        }
         "plan" => {
             if apply || journal_path.is_some() {
                 return Err("plan does not accept --apply or --journal".into());
@@ -201,6 +224,7 @@ fn check_outcome(report: &CopyReport) -> Result<(), Box<dyn Error>> {
 
 fn print_usage() {
     eprintln!("SyncWise CLI");
+    eprintln!("  syncwise-cli match <source> <destination> (read-only matching report)");
     eprintln!("  syncwise-cli plan <source> <destination>");
     eprintln!("  syncwise-cli copy <source> <destination> [--apply] [--journal <path>]");
     eprintln!("  syncwise-cli recover <destination> <journal>");
