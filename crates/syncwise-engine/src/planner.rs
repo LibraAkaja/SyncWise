@@ -10,8 +10,8 @@ use tempfile::NamedTempFile;
 
 use crate::{
     FileEntry, MatchingOptions, Plan, PlanIssue, PlanIssueCode, PlanItem, PlanItemKind,
-    ScanIssueCode, ScanResult, SyncError, SyncErrorCode, match_files_with_cancellation,
-    validate_folder_pair,
+    ScanIssueCode, ScanResult, SyncError, SyncErrorCode,
+    matching::match_scan_files_with_cancellation, validate_folder_pair,
 };
 
 static NEXT_PLAN_ID: AtomicU64 = AtomicU64::new(1);
@@ -70,9 +70,9 @@ pub fn generate_plan_with_cancellation(
             .filter_map(|issue| issue.relative_path.as_deref()),
     );
 
-    let matching = match_files_with_cancellation(
-        &source.files,
-        &destination.files,
+    let matching = match_scan_files_with_cancellation(
+        source,
+        destination,
         &MatchingOptions::default(),
         cancellation,
     )?;
@@ -128,7 +128,7 @@ pub fn generate_plan_with_cancellation(
                 Some(candidate) => (
                     PlanItemKind::PossibleDuplicate,
                     Some(format!(
-                        "Possible match: {}. {} Names do not prove identical content.",
+                        "Candidate: {}. {}",
                         candidate.destination_relative_path,
                         candidate.reasons.join(" ")
                     )),
@@ -391,7 +391,7 @@ mod tests {
                 .reason
                 .as_deref()
                 .unwrap()
-                .contains("do not prove identical")
+                .contains("File sizes differ; content hashing was skipped.")
         );
         assert_eq!(plan.required_bytes, b"new file".len() as u64);
         assert_eq!(
@@ -421,6 +421,7 @@ mod tests {
             size_bytes: 5,
             modified_time_unix_ms: None,
             normalized_name: "escape.txt".into(),
+            audio_metadata: None,
         });
         source.issues.push(ScanIssue {
             relative_path: Some("locked.txt".into()),
@@ -491,6 +492,7 @@ mod tests {
                 size_bytes: 1,
                 modified_time_unix_ms: None,
                 normalized_name: format!("invalid-{index}"),
+                audio_metadata: None,
             });
         }
 

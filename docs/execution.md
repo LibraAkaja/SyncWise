@@ -6,6 +6,7 @@ The desktop execution flow starts only after review preflight has been confirmed
 
 - The UI receives throttled per-file byte progress and an overall byte/file summary.
 - Cancellation is cooperative. The current temporary copy is discarded safely if it has not been finalized.
+- Optional verification streams BLAKE3 hashes over the source and flushed temporary copy before no-replace finalization. A mismatch or read failure prevents the temporary file from receiving its final name; verification is disabled by default because it adds disk I/O. Desktop users can enable it in the confirmation dialog, and the CLI exposes `copy ... --verify`.
 - The final report records completed files, bytes written, and files needing attention. Per-file failures are listed, with a bounded list for large runs.
 - Failed or cancelled runs can retry only unfinished approved items. Previously completed items are not copied again.
 

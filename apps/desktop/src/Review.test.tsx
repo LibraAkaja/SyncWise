@@ -79,7 +79,7 @@ describe("Review", () => {
     expect(await screen.findByText("20,000 approved")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Review preflight" }));
     const modal = await screen.findByRole("dialog");
-    await user.click(within(modal).getByRole("checkbox"));
+    await user.click(within(modal).getByRole("checkbox", { name: /I confirm the source/ }));
     await user.click(within(modal).getByRole("button", { name: "Confirm plan" }));
     expect(await screen.findByText("Plan confirmed")).toBeInTheDocument();
     expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_sync")).toBe(false);
@@ -104,12 +104,16 @@ describe("Review", () => {
     expect(within(modal).getByRole("button", { name: "Confirm plan" })).toBeDisabled();
     expect(within(modal).getByRole("button", { name: "Start Sync" })).toBeDisabled();
     expect(within(modal).getByText("C:\\Source")).toBeInTheDocument();
-    await user.click(within(modal).getByRole("checkbox"));
+    await user.click(within(modal).getByRole("checkbox", { name: /I confirm the source/ }));
     await user.click(within(modal).getByRole("button", { name: "Confirm plan" }));
     expect(await screen.findByText("Plan confirmed")).toBeInTheDocument();
     expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_sync")).toBe(false);
+    await user.click(within(modal).getByRole("checkbox", { name: /Verify each copied file/ }));
     await user.click(within(modal).getByRole("button", { name: "Start Sync" }));
     expect(onStarted).toHaveBeenCalledWith("run-1", plan);
+    expect(vi.mocked(invoke).mock.calls.find(([command]) => command === "start_sync")?.[1]).toMatchObject({
+      verifyAfterCopy: true,
+    });
   });
 
   it("cannot confirm blocking preflight issues even after acknowledgement", async () => {
@@ -118,7 +122,7 @@ describe("Review", () => {
     await user.click(screen.getByRole("button", { name: "Approve missing" }));
     await user.click(screen.getByRole("button", { name: "Review preflight" }));
     const modal = await screen.findByRole("dialog");
-    await user.click(within(modal).getByRole("checkbox"));
+    await user.click(within(modal).getByRole("checkbox", { name: /I confirm the source/ }));
     expect(within(modal).getByText("Source changed. Scan again.")).toBeInTheDocument();
     expect(within(modal).getByRole("button", { name: "Confirm plan" })).toBeDisabled();
   });

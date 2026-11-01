@@ -8,14 +8,30 @@ use ts_rs::TS;
 use unicode_casefold::UnicodeCaseFold;
 use unicode_normalization::UnicodeNormalization;
 
-use crate::{FileEntry, SyncError, SyncErrorCode};
+use crate::{
+    AudioMetadata, FileEntry, ScanResult, SyncError, SyncErrorCode,
+    audio::{full_hash_file, partial_hash_file},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "snake_case")]
 #[ts(rename_all = "snake_case")]
 pub enum MatchLabel {
+    Identical,
+    VeryLikelySameSong,
     LikelySameSong,
     Uncertain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum HashEvidence {
+    SizeMismatch,
+    PartialHashMismatch,
+    FullHashMismatch,
+    Identical,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -48,6 +64,13 @@ pub struct CandidateMatch {
     pub title_similarity: f64,
     pub artist_similarity: Option<f64>,
     pub size_plausibility: Option<f64>,
+    #[ts(optional)]
+    pub audio_tag_similarity: Option<f64>,
+    #[ts(optional)]
+    pub duration_similarity: Option<f64>,
+    #[serde(default)]
+    #[ts(optional)]
+    pub hash_evidence: Option<HashEvidence>,
     pub label: MatchLabel,
     pub reasons: Vec<String>,
     pub suggested: bool,
@@ -374,6 +397,141 @@ pub fn match_files_with_cancellation(
     })
 }
 
+pub fn match_scan_files_with_cancellation(
+    source: &ScanResult,
+    destination: &ScanResult,
+    options: &MatchingOptions,
+    cancellation: &AtomicBool,
+) -> Result<MatchingReport, SyncError> {
+    let mut report =
+        match_files_with_cancellation(&source.files, &destination.files, options, cancellation)?;
+    let source_by_path: HashMap<_, _> = source
+        .files
+        .iter()
+        .map(|file| (file.relative_path.as_str(), file))
+        .collect();
+    let destination_by_path: HashMap<_, _> = destination
+        .files
+        .iter()
+        .map(|file| (file.relative_path.as_str(), file))
+        .collect();
+    let mut source_partial = HashMap::new();
+    let mut destination_partial = HashMap::new();
+    let mut source_full = HashMap::new();
+    let mut destination_full = HashMap::new();
+
+    for matches in &mut report.matches {
+        let Some(source_file) = source_by_path.get(matches.source_relative_path.as_str()) else {
+            continue;
+        };
+        let source_path = std::path::Path::new(&source.root).join(&source_file.relative_path);
+        for candidate in &mut matches.candidates {
+            check_cancelled(cancellation)?;
+            let Some(destination_file) =
+                destination_by_path.get(candidate.destination_relative_path.as_str())
+            else {
+                continue;
+            };
+            if source_file.size_bytes != destination_file.size_bytes {
+                candidate.hash_evidence = Some(HashEvidence::SizeMismatch);
+                candidate
+                    .reasons
+                    .push("File sizes differ; content hashing was skipped.".into());
+                continue;
+            }
+            let destination_path =
+                std::path::Path::new(&destination.root).join(&destination_file.relative_path);
+            let partial_match = match (
+                cached_hash(
+                    &source_path,
+                    cancellation,
+                    &mut source_partial,
+                    partial_hash_file,
+                ),
+                cached_hash(
+                    &destination_path,
+                    cancellation,
+                    &mut destination_partial,
+                    partial_hash_file,
+                ),
+            ) {
+                (Ok(source_hash), Ok(destination_hash)) => source_hash == destination_hash,
+                (Err(error), _) | (_, Err(error))
+                    if error.code == SyncErrorCode::OperationCancelled =>
+                {
+                    return Err(error);
+                }
+                (Err(error), _) | (_, Err(error)) => {
+                    candidate.hash_evidence = Some(HashEvidence::Unavailable);
+                    candidate.reasons.push(format!(
+                        "Content hash evidence unavailable; filename/tag evidence only. {error}"
+                    ));
+                    continue;
+                }
+            };
+            if !partial_match {
+                candidate.hash_evidence = Some(HashEvidence::PartialHashMismatch);
+                candidate
+                    .reasons
+                    .push("Partial content hashes differ; full hashing was skipped.".into());
+                continue;
+            }
+            let identical = match (
+                cached_hash(&source_path, cancellation, &mut source_full, full_hash_file),
+                cached_hash(
+                    &destination_path,
+                    cancellation,
+                    &mut destination_full,
+                    full_hash_file,
+                ),
+            ) {
+                (Ok(source_hash), Ok(destination_hash)) => source_hash == destination_hash,
+                (Err(error), _) | (_, Err(error))
+                    if error.code == SyncErrorCode::OperationCancelled =>
+                {
+                    return Err(error);
+                }
+                (Err(error), _) | (_, Err(error)) => {
+                    candidate.hash_evidence = Some(HashEvidence::Unavailable);
+                    candidate.reasons.push(format!(
+                        "Full content hash evidence unavailable; filename/tag evidence only. {error}"
+                    ));
+                    continue;
+                }
+            };
+            if identical {
+                candidate.label = MatchLabel::Identical;
+                candidate.hash_evidence = Some(HashEvidence::Identical);
+                candidate
+                    .reasons
+                    .push("Full BLAKE3 hashes match; file contents are identical.".into());
+            } else {
+                candidate.hash_evidence = Some(HashEvidence::FullHashMismatch);
+                candidate.reasons.push(
+                    "Partial hashes matched but full BLAKE3 hashes differ; files are not identical."
+                        .into(),
+                );
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+fn cached_hash(
+    path: &std::path::Path,
+    cancellation: &AtomicBool,
+    cache: &mut HashMap<std::path::PathBuf, [u8; 32]>,
+    hash: impl Fn(&std::path::Path, &AtomicBool) -> Result<[u8; 32], SyncError>,
+) -> Result<[u8; 32], SyncError> {
+    if let Some(value) = cache.get(path) {
+        return Ok(*value);
+    }
+    let value = hash(path, cancellation)?;
+    cache.insert(path.to_path_buf(), value);
+    Ok(value)
+}
+
 fn check_cancelled(cancellation: &AtomicBool) -> Result<(), SyncError> {
     if cancellation.load(Ordering::Relaxed) {
         Err(SyncError::new(
@@ -385,6 +543,14 @@ fn check_cancelled(cancellation: &AtomicBool) -> Result<(), SyncError> {
     }
 }
 
+struct PairScore {
+    score: f64,
+    title_similarity: f64,
+    artist_similarity: Option<f64>,
+    audio_tag_similarity: Option<f64>,
+    duration_similarity: Option<f64>,
+}
+
 fn score_pair(
     source: &FileEntry,
     destination: &FileEntry,
@@ -392,7 +558,7 @@ fn score_pair(
     destination_name: &PreparedName,
     options: &MatchingOptions,
 ) -> Option<CandidateMatch> {
-    let mut best: Option<(f64, f64, Option<f64>)> = None;
+    let mut best: Option<PairScore> = None;
     let size = if source.size_bytes == 0 || destination.size_bytes == 0 {
         None
     } else {
@@ -409,6 +575,14 @@ fn score_pair(
                 .as_ref()
                 .zip(destination_variant.artist.as_ref())
                 .map(|(left, right)| strsim::jaro_winkler(left, right));
+            let audio_tag_similarity = tag_similarity(
+                source.audio_metadata.as_ref(),
+                destination.audio_metadata.as_ref(),
+            );
+            let duration_similarity = duration_similarity(
+                source.audio_metadata.as_ref(),
+                destination.audio_metadata.as_ref(),
+            );
             let mut weight = 0.5;
             let mut weighted = title * 0.5;
             if let Some(artist) = artist {
@@ -419,19 +593,49 @@ fn score_pair(
                 weighted += size * 0.1;
                 weight += 0.1;
             }
+            if let Some(similarity) = audio_tag_similarity {
+                weighted += similarity * 0.2;
+                weight += 0.2;
+            }
+            if let Some(similarity) = duration_similarity {
+                weighted += similarity * 0.1;
+                weight += 0.1;
+            }
             let score = weighted / weight;
-            if best.as_ref().is_none_or(|current| score > current.0) {
-                best = Some((score, title, artist));
+            if best.as_ref().is_none_or(|current| score > current.score) {
+                best = Some(PairScore {
+                    score,
+                    title_similarity: title,
+                    artist_similarity: artist,
+                    audio_tag_similarity,
+                    duration_similarity,
+                });
             }
         }
     }
-    let (score, title_similarity, artist_similarity) = best?;
+    let PairScore {
+        score,
+        title_similarity,
+        artist_similarity,
+        audio_tag_similarity,
+        duration_similarity,
+    } = best?;
     if title_similarity < options.uncertain_threshold || score < options.uncertain_threshold {
         return None;
     }
     let version_conflict = source_name.versions != destination_name.versions;
     let artist_conflict = artist_similarity.is_some_and(|similarity| similarity < 0.90);
-    let label = if score >= options.likely_threshold
+    let audio_tags_agree = audio_tags_agree(
+        source.audio_metadata.as_ref(),
+        destination.audio_metadata.as_ref(),
+    );
+    let duration_agrees = durations_agree(
+        source.audio_metadata.as_ref(),
+        destination.audio_metadata.as_ref(),
+    );
+    let label = if audio_tags_agree && duration_agrees && !version_conflict {
+        MatchLabel::VeryLikelySameSong
+    } else if score >= options.likely_threshold
         && title_similarity >= options.likely_threshold
         && title_similarity == 1.0
         && artist_similarity == Some(1.0)
@@ -462,6 +666,28 @@ fn score_pair(
             size * 100.0
         ));
     }
+    if let Some(similarity) = audio_tag_similarity {
+        reasons.push(format!(
+            "Audio tag title/artist similarity: {:.1}%.",
+            similarity * 100.0
+        ));
+    } else {
+        reasons.push("Audio title/artist tags are missing or incomplete.".into());
+    }
+    if let Some(similarity) = duration_similarity {
+        reasons.push(format!(
+            "Audio duration similarity: {:.1}%.",
+            similarity * 100.0
+        ));
+    } else {
+        reasons.push("Audio duration evidence is unavailable.".into());
+    }
+    if label == MatchLabel::VeryLikelySameSong {
+        reasons.push(
+            "Normalized audio title and artist tags agree and durations are within tolerance; review is still required."
+                .into(),
+        );
+    }
     if version_conflict {
         reasons.push(format!(
             "Version words differ: {:?} versus {:?}; confidence capped at Uncertain.",
@@ -475,7 +701,7 @@ fn score_pair(
         reasons.push("The name-only Likely tier requires exact normalized title and artist agreement; fuzzy evidence remains Uncertain.".into());
     }
     reasons.push(
-        "No hashes, audio tags, or duration evidence. This suggestion requires review.".into(),
+        "Hash evidence is unavailable until candidate content checks complete. This suggestion requires review.".into(),
     );
     Some(CandidateMatch {
         destination_relative_path: destination.relative_path.clone(),
@@ -483,15 +709,101 @@ fn score_pair(
         title_similarity,
         artist_similarity,
         size_plausibility: size,
+        audio_tag_similarity,
+        duration_similarity,
+        hash_evidence: None,
         label,
         reasons,
         suggested: false,
     })
 }
 
+fn preferred_artist(metadata: &AudioMetadata) -> Option<&str> {
+    metadata
+        .album_artist
+        .as_deref()
+        .or(metadata.artist.as_deref())
+        .map(str::trim)
+        .filter(|artist| !artist.is_empty())
+}
+
+fn audio_tags_agree(source: Option<&AudioMetadata>, destination: Option<&AudioMetadata>) -> bool {
+    let (Some(source), Some(destination)) = (source, destination) else {
+        return false;
+    };
+    let (Some(source_title), Some(destination_title)) =
+        (source.title.as_deref(), destination.title.as_deref())
+    else {
+        return false;
+    };
+    let (Some(source_artist), Some(destination_artist)) =
+        (preferred_artist(source), preferred_artist(destination))
+    else {
+        return false;
+    };
+    normalize_title(source_title) == normalize_title(destination_title)
+        && normalize_title(source_artist) == normalize_title(destination_artist)
+}
+
+fn durations_agree(source: Option<&AudioMetadata>, destination: Option<&AudioMetadata>) -> bool {
+    let (Some(source), Some(destination)) = (source, destination) else {
+        return false;
+    };
+    let (Some(source_duration), Some(destination_duration)) =
+        (source.duration_ms, destination.duration_ms)
+    else {
+        return false;
+    };
+    if source_duration == 0 || destination_duration == 0 {
+        return false;
+    }
+    let difference = source_duration.abs_diff(destination_duration);
+    let tolerance = 2_000_u64.max(source_duration.max(destination_duration) / 67);
+    difference <= tolerance
+}
+
+fn tag_similarity(
+    source: Option<&AudioMetadata>,
+    destination: Option<&AudioMetadata>,
+) -> Option<f64> {
+    let (Some(source), Some(destination)) = (source, destination) else {
+        return None;
+    };
+    let title = source
+        .title
+        .as_deref()
+        .zip(destination.title.as_deref())
+        .map(|(left, right)| strsim::jaro_winkler(&normalize_title(left), &normalize_title(right)));
+    let artist = preferred_artist(source)
+        .zip(preferred_artist(destination))
+        .map(|(left, right)| strsim::jaro_winkler(&normalize_title(left), &normalize_title(right)));
+    match (title, artist) {
+        (Some(title), Some(artist)) => Some((title + artist) / 2.0),
+        (Some(title), None) => Some(title),
+        (None, Some(artist)) => Some(artist),
+        (None, None) => None,
+    }
+}
+
+fn duration_similarity(
+    source: Option<&AudioMetadata>,
+    destination: Option<&AudioMetadata>,
+) -> Option<f64> {
+    let (Some(source_duration), Some(destination_duration)) = (
+        source.and_then(|metadata| metadata.duration_ms),
+        destination.and_then(|metadata| metadata.duration_ms),
+    ) else {
+        return None;
+    };
+    let longest = source_duration.max(destination_duration);
+    (longest > 0)
+        .then(|| 1.0 - source_duration.abs_diff(destination_duration) as f64 / longest as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn file(path: &str) -> FileEntry {
         FileEntry {
@@ -499,6 +811,7 @@ mod tests {
             size_bytes: 100,
             modified_time_unix_ms: None,
             normalized_name: String::new(),
+            audio_metadata: None,
         }
     }
 
@@ -557,6 +870,94 @@ mod tests {
                 }
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn matching_uses_tags_and_duration_for_very_likely_tier() {
+        let mut source = file("Song - Artist.mp3");
+        source.audio_metadata = Some(AudioMetadata {
+            title: Some("Song".into()),
+            artist: Some("Artist".into()),
+            album_artist: None,
+            album: Some("Album".into()),
+            duration_ms: Some(180_000),
+        });
+        let mut destination = file("Artist - Song.flac");
+        destination.audio_metadata = Some(AudioMetadata {
+            title: Some(" song ".into()),
+            artist: None,
+            album_artist: Some("ARTIST".into()),
+            album: Some("Different album".into()),
+            duration_ms: Some(181_500),
+        });
+        let report = match_files(
+            &[source.clone()],
+            &[destination.clone()],
+            &MatchingOptions::default(),
+        )
+        .unwrap();
+        let candidate = &report.matches[0].candidates[0];
+        assert_eq!(candidate.label, MatchLabel::VeryLikelySameSong);
+        assert_eq!(candidate.audio_tag_similarity, Some(1.0));
+        assert!(candidate.duration_similarity.is_some());
+        assert!(
+            candidate
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("review is still required"))
+        );
+
+        destination.audio_metadata.as_mut().unwrap().duration_ms = Some(210_000);
+        assert_eq!(
+            match_files(&[source], &[destination], &MatchingOptions::default())
+                .unwrap()
+                .matches[0]
+                .candidates[0]
+                .label,
+            MatchLabel::LikelySameSong
+        );
+    }
+
+    #[test]
+    fn staged_hashes_identify_exact_contents_and_reject_same_size_differences() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source_root = workspace.path().join("source");
+        let destination_root = workspace.path().join("destination");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&destination_root).unwrap();
+        let original = vec![3; 160_000];
+        fs::write(source_root.join("Artist - Song.mp3"), &original).unwrap();
+        fs::write(destination_root.join("Song - Artist.flac"), &original).unwrap();
+        let mut altered = original.clone();
+        altered[80_000] = 4;
+        fs::write(destination_root.join("Artist - Song.flac"), altered).unwrap();
+        let source = crate::scan_directory(&source_root, &AtomicBool::new(false), |_| {}).unwrap();
+        let destination =
+            crate::scan_directory(&destination_root, &AtomicBool::new(false), |_| {}).unwrap();
+        let report = match_scan_files_with_cancellation(
+            &source,
+            &destination,
+            &MatchingOptions::default(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        let candidates = &report.matches[0].candidates;
+        assert_eq!(candidates.len(), 2);
+        let identical = candidates
+            .iter()
+            .find(|candidate| candidate.destination_relative_path == "Song - Artist.flac")
+            .unwrap();
+        assert_eq!(identical.label, MatchLabel::Identical);
+        assert_eq!(identical.hash_evidence, Some(HashEvidence::Identical));
+        let different = candidates
+            .iter()
+            .find(|candidate| candidate.destination_relative_path == "Artist - Song.flac")
+            .unwrap();
+        assert_ne!(different.label, MatchLabel::Identical);
+        assert_eq!(
+            different.hash_evidence,
+            Some(HashEvidence::FullHashMismatch)
         );
     }
 

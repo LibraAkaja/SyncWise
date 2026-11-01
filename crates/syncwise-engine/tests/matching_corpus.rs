@@ -21,6 +21,7 @@ fn file(path: String, size: u64) -> FileEntry {
         size_bytes: size,
         modified_time_unix_ms: None,
         normalized_name: String::new(),
+        audio_metadata: None,
     }
 }
 

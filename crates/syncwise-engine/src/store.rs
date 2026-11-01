@@ -83,6 +83,7 @@ const MIGRATIONS: &[&str] = &[
         message TEXT
     );
     CREATE INDEX journal_run ON journal(run_id);",
+    "ALTER TABLE file_index ADD COLUMN audio_metadata_json TEXT;",
 ];
 
 const KEPT_UNREFERENCED_SCANS: i64 = 5;
@@ -220,8 +221,8 @@ impl Store {
         {
             let mut insert = transaction
                 .prepare(
-                    "INSERT INTO file_index (scan_id, side, relative_path, size_bytes, modified_ms, normalized_name)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                    "INSERT INTO file_index (scan_id, side, relative_path, size_bytes, modified_ms, normalized_name, audio_metadata_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
                      ON CONFLICT DO NOTHING",
                 )
                 .map_err(db_error)?;
@@ -234,7 +235,8 @@ impl Store {
                             file.relative_path,
                             i64::try_from(file.size_bytes).unwrap_or(i64::MAX),
                             file.modified_time_unix_ms,
-                            file.normalized_name
+                            file.normalized_name,
+                            serde_json::to_string(&file.audio_metadata).map_err(json_error)?
                         ])
                         .map_err(db_error)?;
                 }
@@ -847,8 +849,21 @@ mod tests {
     fn records_scan_decisions_and_prunes_only_unreferenced_old_scans() {
         let fixture = fixture();
         let mut store = Store::open(&fixture.db).unwrap();
+        let mut source = fixture.source.clone();
+        source
+            .files
+            .iter_mut()
+            .find(|file| file.relative_path.ends_with(".mp3"))
+            .unwrap()
+            .audio_metadata = Some(crate::AudioMetadata {
+            title: Some("Winter".into()),
+            artist: Some("Lina".into()),
+            album_artist: None,
+            album: Some("Test Album".into()),
+            duration_ms: Some(123_000),
+        });
         let first = store
-            .record_scan(&fixture.plan, &fixture.source, &fixture.destination)
+            .record_scan(&fixture.plan, &source, &fixture.destination)
             .unwrap();
         let item = fixture.plan.items[0].id.clone();
         store
@@ -915,6 +930,17 @@ mod tests {
             )
             .unwrap();
         assert!(candidates > 0);
+        let audio_metadata_column: String = store
+            .connection
+            .query_row(
+                "SELECT audio_metadata_json FROM file_index WHERE scan_id = ?1 AND side = 'source' AND relative_path LIKE '%.mp3'",
+                [first],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let audio_metadata: crate::AudioMetadata =
+            serde_json::from_str(&audio_metadata_column).unwrap();
+        assert_eq!(audio_metadata.title.as_deref(), Some("Winter"));
     }
 
     #[test]

@@ -9,19 +9,24 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use walkdir::{DirEntry, WalkDir};
 
+mod audio;
+pub use audio::AudioMetadata;
+pub use audio::{full_hash_file, partial_hash_file, verify_file_copy};
 mod planner;
 pub use planner::{generate_plan, generate_plan_with_cancellation};
 mod copier;
 pub use copier::{
-    copy_approved_items, copy_approved_items_as, inspect_recovery, new_run_id, read_run_journal,
-    resume_run, run_snapshot_path,
+    CopyOptions, copy_approved_items, copy_approved_items_as, copy_approved_items_as_with_options,
+    copy_approved_items_with_options, inspect_recovery, new_run_id, read_run_journal, resume_run,
+    run_snapshot_path,
 };
 mod store;
 pub use store::{RunItemSummary, RunStatus, RunSummary, Store};
 mod matching;
 pub use matching::{
-    CandidateMatch, FileMatches, MatchGroup, MatchLabel, MatchingOptions, MatchingReport,
-    match_files, match_files_with_cancellation, normalize_title,
+    CandidateMatch, FileMatches, HashEvidence, MatchGroup, MatchLabel, MatchingOptions,
+    MatchingReport, match_files, match_files_with_cancellation, match_scan_files_with_cancellation,
+    normalize_title,
 };
 mod review;
 pub use review::{DecisionChange, DecisionState, ReviewPreflight, ReviewSession};
@@ -50,6 +55,8 @@ pub struct FileEntry {
     #[ts(type = "number | null")]
     pub modified_time_unix_ms: Option<i64>,
     pub normalized_name: String,
+    #[serde(default)]
+    pub audio_metadata: Option<AudioMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -460,6 +467,9 @@ pub fn scan_directory(
                         size_bytes: metadata.len(),
                         modified_time_unix_ms,
                         normalized_name: normalize_name(&name),
+                        audio_metadata: is_audio_file(entry.path())
+                            .then(|| audio::extract_audio_metadata(entry.path()))
+                            .flatten(),
                     });
                 }
                 Err(_) => result.issues.push(ScanIssue {
@@ -487,6 +497,17 @@ pub fn scan_directory(
         issues_found: result.issues.len() as u64,
     });
     Ok(result)
+}
+
+fn is_audio_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "mp3" | "flac" | "wav" | "m4a" | "ogg" | "opus" | "aac" | "wma" | "aiff" | "alac"
+            )
+        })
 }
 
 fn relative_path_text(path: &Path, root: &Path) -> Option<String> {
@@ -629,10 +650,13 @@ mod tests {
 
         FolderPair::export_all_to(&output_directory).unwrap();
         FileEntry::export_all_to(&output_directory).unwrap();
+        AudioMetadata::export_all_to(&output_directory).unwrap();
         PlanItem::export_all_to(&output_directory).unwrap();
         Plan::export_all_to(&output_directory).unwrap();
         MatchingOptions::export_all_to(&output_directory).unwrap();
         MatchingReport::export_all_to(&output_directory).unwrap();
+        AudioMetadata::export_all_to(&output_directory).unwrap();
+        HashEvidence::export_all_to(&output_directory).unwrap();
         DecisionChange::export_all_to(&output_directory).unwrap();
         DecisionState::export_all_to(&output_directory).unwrap();
         ReviewPreflight::export_all_to(&output_directory).unwrap();
