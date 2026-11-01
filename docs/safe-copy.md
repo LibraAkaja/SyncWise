@@ -1,6 +1,6 @@
 # Safe Copy and Recovery
 
-Milestone 4 provides an engine/CLI workflow. Desktop copy controls are intentionally not exposed yet.
+The engine/CLI safe-copy workflow and desktop execution/recovery flow use the same journaled, no-replace copy engine. See [execution.md](./execution.md) for desktop progress, SQLite persistence, and startup recovery behavior.
 
 ## CLI Workflow
 

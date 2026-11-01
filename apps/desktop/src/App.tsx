@@ -9,6 +9,9 @@ import type { SyncError } from "./types/generated/SyncError";
 import type { Plan } from "./types/generated/Plan";
 import type { DecisionState } from "./types/generated/DecisionState";
 import Review from "./Review";
+import Execution from "./Execution";
+import type { RunSummary } from "./types/generated/RunSummary";
+import type { RecoveryReport } from "./types/generated/RecoveryReport";
 import "./App.css";
 
 type FolderValidationStatus = "incomplete" | "checking" | "valid" | "invalid";
@@ -89,6 +92,10 @@ function App() {
   const [scanResults, setScanResults] = useState<ScanResults | null>(null);
   const [review, setReview] = useState<{ plan: Plan; decisions: DecisionState } | null>(null);
   const [showReview, setShowReview] = useState(false);
+  const [executionRun, setExecutionRun] = useState<string | null>(null);
+  const [interrupted, setInterrupted] = useState<RunSummary[]>([]);
+  const [inspection, setInspection] = useState<{ runId: string; report: RecoveryReport } | null>(null);
+  const [recoveryError, setRecoveryError] = useState("");
   const activeScanId = useRef<string | null>(null);
   const unlistenProgress = useRef<UnlistenFn | null>(null);
   const unlistenCompletion = useRef<UnlistenFn | null>(null);
@@ -122,6 +129,7 @@ function App() {
   }
 
   useEffect(() => {
+    void refreshInterruptedRuns();
     return () => {
       stopListening();
       if (activeScanId.current) {
@@ -129,6 +137,15 @@ function App() {
       }
     };
   }, []);
+
+  async function refreshInterruptedRuns() {
+    try {
+      setInterrupted(await invoke<RunSummary[]>("list_interrupted_runs"));
+      setRecoveryError("");
+    } catch (caughtError) {
+      setRecoveryError(messageFromError(caughtError));
+    }
+  }
 
   async function validateFolders(source: string, destination: string) {
     setReview(null); setShowReview(false);
@@ -243,8 +260,39 @@ function App() {
     }
   }
 
+  async function resumeInterrupted(runId: string) {
+    setRecoveryError("");
+    try {
+      await invoke<string>("resume_sync", { runId });
+      setInterrupted([]);
+      setExecutionRun(runId);
+    } catch (caughtError) { setRecoveryError(messageFromError(caughtError)); }
+  }
+
+  async function inspectInterrupted(runId: string) {
+    setRecoveryError("");
+    try { setInspection({ runId, report: await invoke<RecoveryReport>("inspect_run", { runId }) }); }
+    catch (caughtError) { setRecoveryError(messageFromError(caughtError)); }
+  }
+
+  async function dismissInterrupted(runId: string) {
+    setRecoveryError("");
+    try {
+      await invoke("abandon_run", { runId });
+      setInterrupted((runs) => runs.filter((run) => run.runId !== runId));
+      setInspection((current) => (current?.runId === runId ? null : current));
+    } catch (caughtError) { setRecoveryError(messageFromError(caughtError)); }
+  }
+
+  if (executionRun) {
+    return <Execution key={executionRun} runId={executionRun} onClose={() => {
+      setExecutionRun(null); setShowReview(false); setReview(null);
+      void refreshInterruptedRuns();
+    }} />;
+  }
+
   if (showReview && review) {
-    return <Review key={review.plan.id} plan={review.plan} initialDecisions={review.decisions} onBack={(decisions) => { setReview({ ...review, decisions }); setShowReview(false); }} />;
+    return <Review key={review.plan.id} plan={review.plan} initialDecisions={review.decisions} onBack={(decisions) => { setReview({ ...review, decisions }); setShowReview(false); }} onStarted={(runId) => setExecutionRun(runId)} />;
   }
 
   return (
@@ -253,6 +301,20 @@ function App() {
         <p className="eyebrow">SYNCWISE / SETUP</p>
         <h1 id="app-title">Choose folders</h1>
         <p className="summary">Select where files come from and where they go.</p>
+
+        {interrupted.map((run) => <div className="review-notice recovery-banner" role="alert" key={run.runId}>
+          <p><strong>An earlier sync did not finish.</strong> {run.doneItems.toLocaleString()} of {run.totalItems.toLocaleString()} files were copied to {run.destinationRoot}. Nothing was deleted or replaced.</p>
+          <div className="dialog-actions">
+            <button type="button" onClick={() => resumeInterrupted(run.runId)}>Resume</button>
+            <button className="secondary-button" type="button" onClick={() => inspectInterrupted(run.runId)}>Inspect temp files</button>
+            <button className="secondary-button" type="button" onClick={() => dismissInterrupted(run.runId)}>Dismiss</button>
+          </div>
+          {inspection?.runId === run.runId && <div>
+            <p>{inspection.report.orphanedTempPaths.length.toLocaleString()} leftover temporary files and {inspection.report.interruptedItems.length.toLocaleString()} unfinished items. Nothing is removed automatically.</p>
+            <ul className="preflight-issues">{inspection.report.orphanedTempPaths.slice(0, 20).map((path) => <li key={path}>{path}</li>)}</ul>
+          </div>}
+        </div>)}
+        {recoveryError && <p className="review-error" role="alert">{recoveryError}</p>}
 
         <div className="folder-list">
           <div className="folder-row">

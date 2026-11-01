@@ -15,6 +15,7 @@ use tauri::Manager;
 use tauri::{AppHandle, Emitter, State};
 
 mod review;
+mod sync;
 
 static NEXT_SCAN_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -123,7 +124,7 @@ fn start_scan(
                 .and_then(|generated| {
                     let store = app.state::<Mutex<review::ReviewStore>>();
                     let state =
-                        review::install(&app, &store, generated.clone(), &destination.files)?;
+                        review::install(&app, &store, generated.clone(), source, destination)?;
                     decisions = Some(state);
                     Ok(generated)
                 });
@@ -202,13 +203,22 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(ScanTaskManager::default())
         .manage(Mutex::new(review::ReviewStore::default()))
+        .manage(sync::SyncState::default())
         .invoke_handler(tauri::generate_handler![
             validate_folder_pair,
             start_scan,
             cancel_scan,
             review::review_decisions,
             review::review_preflight,
-            review::reset_review_memory
+            review::reset_review_memory,
+            review::confirm_review,
+            sync::start_sync,
+            sync::resume_sync,
+            sync::cancel_sync,
+            sync::get_run,
+            sync::list_interrupted_runs,
+            sync::abandon_run,
+            sync::inspect_run
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

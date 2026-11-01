@@ -18,9 +18,9 @@ Frontend decision calls send only plan ID, item IDs, revision, choices, and bulk
 
 Preflight runs on a blocking worker, rechecks roots, approved source size/mtime, destination absence, destination writability, and free space for all approved files, including individually approved possible duplicates. The summary includes approved/pending/rejected/deferred/conflict counts and blocking issues. Pending decisions must be decided or deferred, blocking issues must be resolved, and at least one file must be approved before plan confirmation. Checking the acknowledgement cannot override a blocking issue.
 
-The confirmation dialog names both complete roots and requires a checkbox plus an explicit **Confirm plan** action. It reruns preflight before marking preparation confirmed. **Start Sync stays disabled** because physical removable-drive validation is pending and desktop execution belongs to Milestone 7. Confirmation does not write user files, create a copy journal, or authorize a hidden copy call. Writability checks create/remove only a temporary destination probe.
+The confirmation dialog names both complete roots and requires a checkbox plus an explicit **Confirm plan** action. It reruns preflight before marking preparation confirmed. Starting Sync now invokes the Milestone 7 execution flow only for this confirmed decision revision. Confirmation alone does not write user files or create a copy journal. Writability checks create/remove only a temporary destination probe. Physical removable-drive validation remains a release gate.
 
-Rejection memory is stored as `rejected-matches.json` in Tauri's app-data directory. It contains paths and metadata, not content; keep it private. SQLite migrations and saved profiles remain Milestones 7/9 work.
+Rejection memory is stored as `rejected-matches.json` in Tauri's app-data directory. It contains paths and metadata, not content; keep it private. SQLite migrations and run persistence are implemented for Milestone 7; saved profiles remain Milestone 9 work.
 
 ## Verification
 
