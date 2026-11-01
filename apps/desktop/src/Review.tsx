@@ -46,6 +46,7 @@ export default function Review({ plan, initialDecisions, onBack, onStarted }: {
   const [summary, setSummary] = useState<ReviewPreflight | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [prepared, setPrepared] = useState(false);
+  const [verifyAfterCopy, setVerifyAfterCopy] = useState(false);
   const [memoryReset, setMemoryReset] = useState(false);
   const [reviewItems] = useState(() => [...plan.items, ...plan.issues.map((issue, index) => ({
     id: `plan-issue-${index}`, sourceRelativePath: issue.message, destinationRelativePath: "",
@@ -107,7 +108,11 @@ export default function Review({ plan, initialDecisions, onBack, onStarted }: {
   async function startSync() {
     setBusy(true); setError("");
     try {
-      const runId = await invoke<string>("start_sync", { planId: plan.id, revision: decisions.revision });
+      const runId = await invoke<string>("start_sync", {
+        planId: plan.id,
+        revision: decisions.revision,
+        verifyAfterCopy,
+      });
       onStarted(runId, plan);
     } catch (failure) { setError(errorMessage(failure)); setBusy(false); }
   }
@@ -171,7 +176,7 @@ export default function Review({ plan, initialDecisions, onBack, onStarted }: {
                 return <div key={item.id} id={`row-${item.id}`} role="row" aria-rowindex={row.index + 2} aria-selected={selectedId === item.id} className={`table-grid result-row ${selectedId === item.id ? "is-selected" : ""}`} style={{ position: "absolute", top: row.start - 38, width: "100%", height: row.size }} onClick={() => { setSelectedId(item.id); setCandidateIndex(0); scrollRef.current?.focus(); }}>
                   <div role="cell" title={item.sourceRelativePath}><span className="row-path">{item.sourceRelativePath}</span><small>{formatBytes(item.sizeBytes)}</small></div>
                   <span role="cell" className="row-path" title={best?.destinationRelativePath ?? item.destinationRelativePath}>{best?.destinationRelativePath ?? (item.kind === "copy" ? "No candidate" : item.destinationRelativePath)}</span>
-                  <span role="cell" className="evidence-label">{best ? best.label === "likely_same_song" ? "Likely" : "Uncertain" : item.kind === "copy" ? "Missing" : tabs.find((entry) => entry.kind === item.kind)?.label}</span>
+                  <span role="cell" className="evidence-label">{best ? best.label === "identical" ? "Identical" : best.label === "very_likely_same_song" ? "Very likely" : best.label === "likely_same_song" ? "Likely" : "Uncertain" : item.kind === "copy" ? "Missing" : tabs.find((entry) => entry.kind === item.kind)?.label}</span>
                   <span role="cell" className={`decision-label choice-${decisions.choices[item.id] ?? "pending"}`}>{decisions.choices[item.id] === "approve" ? "Approved" : decisions.choices[item.id] === "reject" ? "Rejected" : decisions.choices[item.id] === "defer" ? "Deferred" : item.kind === "conflict" || item.kind === "error" ? "Blocked" : item.kind === "already_present" ? "Skip" : "Undecided"}</span>
                 </div>;
               })}
@@ -185,7 +190,7 @@ export default function Review({ plan, initialDecisions, onBack, onStarted }: {
         {selected ? <>
           <dl><dt>Source</dt><dd>{selected.sourceRelativePath}</dd><dt>Size</dt><dd>{formatBytes(selected.sizeBytes)}</dd></dl>
           {candidates.length > 1 && <label className="candidate-select">Destination candidate<select aria-label="Destination candidate" value={candidateIndex} onChange={(event) => setCandidateIndex(Number(event.target.value))}>{candidates.map((entry, index) => <option key={entry.destinationRelativePath} value={index}>{entry.destinationRelativePath}</option>)}</select></label>}
-          {candidate && <><dl><dt>Destination</dt><dd>{candidate.destinationRelativePath}</dd><dt>Confidence</dt><dd>{candidate.label === "likely_same_song" ? "Likely same song" : "Uncertain"} ({Math.round(candidate.score * 100)}%)</dd></dl><h3>Evidence</h3><ul className="evidence-reasons">{candidate.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></>}
+          {candidate && <><dl><dt>Destination</dt><dd>{candidate.destinationRelativePath}</dd><dt>Confidence</dt><dd>{candidate.label === "identical" ? "Identical content" : candidate.label === "very_likely_same_song" ? "Very likely same recording" : candidate.label === "likely_same_song" ? "Likely same song" : "Uncertain"} ({Math.round(candidate.score * 100)}%)</dd></dl><h3>Evidence</h3><ul className="evidence-reasons">{candidate.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul></>}
           {!candidate && <p className="item-reason">{selected.reason ?? (selected.kind === "copy" ? "No duplicate candidate was retained." : "This item will not be copied.")}</p>}
           {group && <div className="group-warning"><h3>Shared destination candidate</h3><ul>{group.sourceRelativePaths.slice(0, 20).map((path) => <li key={path}>{path}</li>)}</ul>{group.sourceRelativePaths.length > 20 && <p>{group.sourceRelativePaths.length - 20} additional source files share this candidate.</p>}</div>}
           {actionable && <div className="decision-controls" role="group" aria-label="Decision for selected file">{([{ choice: "approve", label: "Approve copy", Icon: Check }, { choice: "reject", label: "Reject copy", Icon: X }, { choice: "defer", label: "Defer", Icon: Clock3 }] as const).map(({ choice, label, Icon }) => <button key={choice} type="button" className="secondary-button" aria-pressed={decisions.choices[selected.id] === choice} disabled={busy} onClick={() => change([{ itemId: selected.id, decision: choice as Decision }])}><Icon size={16} />{label}</button>)}</div>}
@@ -201,6 +206,7 @@ export default function Review({ plan, initialDecisions, onBack, onStarted }: {
         {summary.pendingCount > 0 && <p className="review-error">Decide or defer the remaining files before confirming.</p>}
         <ul className="preflight-issues">{summary.issues.slice(0, 50).map((issue, index) => <li className={issue.blocking ? "blocking-issue" : ""} key={index}>{issue.message}</li>)}</ul>{summary.issues.length > 50 && <p className="review-error">{summary.issues.length - 50} additional issues require a new scan.</p>}
         <label className="confirmation-check"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />I confirm the source, destination, and selected files.</label>
+        <label className="confirmation-check"><input type="checkbox" checked={verifyAfterCopy} onChange={(event) => setVerifyAfterCopy(event.target.checked)} />Verify each copied file before finalizing (slower)</label>
         {error && <p className="review-error" role="alert">{error}</p>}
         <div className="dialog-actions"><button className="secondary-button" type="button" disabled={busy} onClick={closeSummary}>Back to review</button><button type="button" disabled={busy || prepared || !summary.canPrepare || !acknowledged} onClick={() => preflight(true)}><Check size={16} />Confirm plan</button><button type="button" disabled={busy || !prepared} onClick={startSync}>Start Sync</button></div>
       </>}

@@ -1,6 +1,6 @@
 # Advisory Filename Matching
 
-Milestone 5 implements name-based candidate review for general files, with audio-aware filename parsing. It does not read audio tags, calculate hashes, inspect duration, approve copies, or delete files.
+Milestone 5 introduced name-based candidate review. Milestone 8 now extracts audio metadata when available, adds tag/duration evidence, and performs staged content hashes for name-retrieved, same-size candidates. Metadata parser failures fall back to filename matching. Evidence remains advisory and never approves copies or deletes files.
 
 ## Usage
 
@@ -16,26 +16,28 @@ Rust is the source of truth for the report. Engine tests generate TypeScript con
 
 1. Keep original paths for display and filesystem operations. Comparison uses the filename stem, Unicode NFC normalization, full Unicode case folding, punctuation/space normalization, and one leading track-number prefix (`01 -` or `01.`).
 2. Recognize ` by ` and spaced dash separators (including en/em dashes). Dash-separated names retain both artist/title orientations because filenames do not reliably specify their order.
-3. Extract remix, live, acoustic, instrumental, remaster/remastered, radio edit, demo, cover, feat/ft/featuring, version, sped up, and slowed tokens. Differing version sets cap confidence at Uncertain; they never prove a recording is the same.
+3. Extract remix, live, acoustic, instrumental, remaster/remastered, radio edit, demo, cover, feat/ft/featuring, version, sped up, and slowed tokens. Differing version sets cap name/tag confidence at Uncertain; they never prove a recording is the same.
 4. Build an inverted destination index over exact core titles, words, and Unicode character trigrams. Audio extensions share a family; general files compare only within the same extension. Retrieve the top 20 candidates by shared-key votes, giving exact-title keys priority.
-5. Score candidates using Jaro-Winkler core-title similarity (weight 0.50), filename-artist similarity when available (0.20), and size plausibility when both sizes are nonzero (0.10). Duration's planned 0.20 weight is excluded because duration evidence is not implemented yet. Exclude missing signals and renormalize the available weights. Size is evidence only, not a byte-identity claim.
-6. Emit the retained candidates with scores and evidence/penalty reasons. Greedy best-score assignment suggests at most one source per destination and vice versa. Sources choosing the same best destination are explicitly grouped for review; no candidate is discarded merely because another source has a better score.
+5. When a supported audio file can be parsed, retain its track title, artist, album artist, album, and duration. Unsupported, malformed, or untagged audio returns no metadata and leaves filename matching available. A strict `Very likely` tier requires normalized track-title and preferred artist-tag agreement, duration within max(2 seconds, 1.5%), and no filename version conflict.
+6. Score retained candidates with core-title similarity (weight 0.50), filename-artist similarity (0.20), and size plausibility (0.10), plus audio tag similarity (0.20) and duration similarity (0.10) when available. Missing signals are excluded and the score is renormalized. These weights are ranking aids, not identity claims.
+7. For retrieved candidates with equal file sizes, compare BLAKE3 partial hashes over file length plus the first and last 64 KiB. Only partial matches proceed to full streaming BLAKE3 hashes. Equal full hashes produce `Identical`; equal size or partial hashes alone never do. Hash read failures are shown as unavailable evidence. The matcher caches each successfully computed stage per file during planning.
+8. Emit retained candidates with scores and evidence/penalty reasons. Greedy best-score assignment suggests at most one source per destination and vice versa. Sources choosing the same best destination are explicitly grouped for review; no candidate is discarded merely because another source has a better score.
 
 Deterministic path ordering breaks score/retrieval ties. Matching can be cancelled between indexed/scored files. Scoring work is bounded by source count times the configurable candidate limit (default 20, maximum 100). Retrieval work also depends on filename length and posting-list length, rather than a strict O(n*K) bound for the whole algorithm.
 
 ## Evidence Tiers
 
-The Milestone 5 gate uses a deliberately conservative name-only tier definition:
+The name-only tiers retain their Milestone 5 thresholds; Milestone 8 adds stronger evidence tiers:
 
 | Tier | Current Rule |
 | --- | --- |
-| Identical | Not emitted. Requires same size and a confirmed full hash in Milestone 8. |
-| Very likely same recording | Not emitted. Requires agreeing audio tags and duration in Milestone 8. |
+| Identical | Equal full BLAKE3 hashes after size and partial-hash stages. Candidate retrieval is still name-based; this tier does not search every file pair. |
+| Very likely same recording | Exact normalized audio title and preferred artist tag, duration within max(2 seconds, 1.5%), and no filename version conflict. Still requires review. |
 | Likely same song | Score at least 0.94, exact normalized core-title and filename-artist agreement, and no version conflict. Still requires review. |
 | Uncertain | Title and weighted score at least 0.78, but missing/conflicting artist evidence, differing versions, or fuzzy-only title evidence. Requires review; no automatic bulk approval. |
 | No candidate | Nothing retained above the review threshold. This does not prove that the folders contain no duplicate content. |
 
-An absent strongest tier is reported as unavailable, not as measured 100% precision on an empty sample. Fuzzy-only matches intentionally remain Uncertain until a broader corpus supports stronger labeling. These restrictions protect precision without dropping lower-confidence suggestions from recall evaluation.
+Very Likely does not assert byte identity; different encodings may be the same recording. `Identical` is content identity, not proof that metadata is correct. Fuzzy-only matches intentionally remain Uncertain. Matching tiers never approve a copy, including `Identical`; the user must review and explicitly choose.
 
 ## Quality Evidence
 
@@ -53,10 +55,10 @@ Measured on 2026-10-28:
 | --- | --- | --- |
 | Likely precision | 100% (98 true, 0 false) | At least 95% |
 | Positive recall at Uncertain or higher | 99.375% (159/160) | At least 90% |
-| Identical / Very likely | Unavailable at this stage | No unsupported strong claims |
+| Identical / Very likely | Controlled engine fixtures; no false `Identical` result for tested same-size different-content files | Stronger tiers require exact hash/tag conditions; not a real-library accuracy estimate |
 | Actions authorized by matching scores | None; CLI regression verifies suggestions stay unapproved | Zero |
 
-The one missed positive is a generated double track-number prefix (`01. 01 - ...`). The parser removes one prefix only. Other fixtures cover artist ordering/suffixes, title typos, version traps, different artists sharing a title, Unicode, missing metadata, encoding/size differences, same-name/different-bytes cases, general files, and same-artist near-title negatives. No audio duration is measured by this corpus evaluator; duration-specific scoring remains Milestone 8 work.
+The one missed positive is a generated double track-number prefix (`01. 01 - ...`). The parser removes one prefix only. Other fixtures cover artist ordering/suffixes, title typos, version traps, different artists sharing a title, Unicode, missing metadata, encoding/size differences, same-name/different-bytes cases, general files, and same-artist near-title negatives. This labeled corpus remains filename-only; focused engine tests cover metadata tiers and identical-hash precision with controlled byte fixtures. A representative real-library audio-tag holdout is still desirable, and the synthetic filename corpus does not measure Very likely or Identical performance.
 
 Evaluation exercises candidate retrieval and scoring on each labeled pair, not just scoring a preselected candidate. The five variants of each seed are correlated: 350 cases are not 350 independent recordings. This is a regression gate, not a held-out real-library accuracy estimate. Separate mixed-library tests cover many-to-one grouping, unique suggested assignments, deterministic ordering, retrieval caps, cancellation, and planner/copy policy. Expand the seed families and add independent real-world holdouts before making broader accuracy claims.
 
@@ -70,4 +72,4 @@ The local release-mode 20,000-by-20,000 synthetic matching check completed in 14
 
 Posting lists are capped at 256 entries by default (configurable up to 4096) to prevent common words/trigrams from degenerating into all-pairs retrieval. If any list is capped, `postingListsTruncated` is true. Common-title libraries can therefore miss candidates, even exact-title candidates beyond the cap. A report without a candidate is never proof of absence. Raise limits deliberately for such libraries; do not treat these scores as content verification.
 
-Name parsing is heuristic. Version words inside genuine titles or artist names may be interpreted as version markers; separator conventions are ambiguous; unsupported file extensions do not cross-match. Different encodings/tags can describe the same recording but have different bytes. Candidate explanations expose what was available and what was missing. Stronger audio and hash evidence is intentionally deferred rather than guessed.
+Name parsing is heuristic. Version words inside genuine titles or artist names may be interpreted as version markers; separator conventions are ambiguous; unsupported file extensions do not cross-match. Audio tags may be absent, malformed, or inaccurate; album is retained for explanation but does not raise confidence. Content hashes distinguish different encodings even when they represent the same recording. Hashing is limited to name-retrieved candidates of equal size, so differently named content duplicates may not be found. Candidate explanations expose available evidence. Hashing can read substantial candidate data and is cancellable.

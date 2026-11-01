@@ -9,9 +9,9 @@ use std::{
 };
 
 use syncwise_engine::{
-    CopyProgress, CopyReport, Decision, Plan, PlanItemKind, RecoveryReport, RunStatus, RunSummary,
-    Store, SyncError, copy_approved_items_as, inspect_recovery, new_run_id, read_run_journal,
-    resume_run, run_snapshot_path,
+    CopyOptions, CopyProgress, CopyReport, Decision, Plan, PlanItemKind, RecoveryReport, RunStatus,
+    RunSummary, Store, SyncError, copy_approved_items_as_with_options, inspect_recovery,
+    new_run_id, read_run_journal, resume_run, run_snapshot_path,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -55,6 +55,7 @@ enum Job {
     Fresh {
         plan: Arc<Plan>,
         decisions: HashMap<String, Decision>,
+        verify_after_copy: bool,
     },
     Resume,
 }
@@ -93,6 +94,7 @@ pub fn start_sync(
     app: AppHandle,
     plan_id: String,
     revision: u32,
+    verify_after_copy: bool,
     review: State<'_, Mutex<ReviewStore>>,
     sync: State<'_, SyncState>,
 ) -> Result<String, SyncError> {
@@ -142,6 +144,7 @@ pub fn start_sync(
     let job = Job::Fresh {
         plan: plan.clone(),
         decisions,
+        verify_after_copy,
     };
     spawn(
         app,
@@ -254,11 +257,18 @@ fn execute(
     };
     let on_progress = |progress: CopyProgress| tracker.record(app, progress);
     let report: CopyReport = match job {
-        Job::Fresh { plan, decisions } => copy_approved_items_as(
+        Job::Fresh {
+            plan,
+            decisions,
+            verify_after_copy,
+        } => copy_approved_items_as_with_options(
             run_id.into(),
             &plan,
             &decisions,
-            false,
+            CopyOptions {
+                dry_run: false,
+                verify_after_copy,
+            },
             cancellation,
             journal_path,
             on_progress,

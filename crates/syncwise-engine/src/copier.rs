@@ -15,7 +15,7 @@ use walkdir::WalkDir;
 use crate::{
     CopyItemResult, CopyProgress, CopyReport, CopyState, Decision, JournalEntry, Plan, PlanItem,
     PlanItemKind, RecoveryReport, SyncError, SyncErrorCode, planner::is_safe_relative_path,
-    validate_folder_pair,
+    validate_folder_pair, verify_file_copy,
 };
 
 static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(1);
@@ -30,6 +30,14 @@ struct SavedRun {
     journal_path: PathBuf,
     plan: Plan,
     decisions: HashMap<String, Decision>,
+    #[serde(default)]
+    verify_after_copy: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+pub struct CopyOptions {
+    pub dry_run: bool,
+    pub verify_after_copy: bool,
 }
 
 pub fn run_snapshot_path(journal_path: &Path, run_id: &str) -> PathBuf {
@@ -66,11 +74,34 @@ pub fn copy_approved_items(
     journal_path: &Path,
     on_progress: impl FnMut(CopyProgress),
 ) -> Result<CopyReport, SyncError> {
-    copy_approved_items_as(
-        new_run_id(),
+    copy_approved_items_with_options(
         plan,
         decisions,
         dry_run,
+        cancellation,
+        journal_path,
+        false,
+        on_progress,
+    )
+}
+
+pub fn copy_approved_items_with_options(
+    plan: &Plan,
+    decisions: &HashMap<String, Decision>,
+    dry_run: bool,
+    cancellation: &AtomicBool,
+    journal_path: &Path,
+    verify_after_copy: bool,
+    on_progress: impl FnMut(CopyProgress),
+) -> Result<CopyReport, SyncError> {
+    copy_approved_items_as_with_options(
+        new_run_id(),
+        plan,
+        decisions,
+        CopyOptions {
+            dry_run,
+            verify_after_copy,
+        },
         cancellation,
         journal_path,
         on_progress,
@@ -83,6 +114,30 @@ pub fn copy_approved_items_as(
     plan: &Plan,
     decisions: &HashMap<String, Decision>,
     dry_run: bool,
+    cancellation: &AtomicBool,
+    journal_path: &Path,
+    on_progress: impl FnMut(CopyProgress),
+) -> Result<CopyReport, SyncError> {
+    copy_approved_items_as_with_options(
+        run_id,
+        plan,
+        decisions,
+        CopyOptions {
+            dry_run,
+            verify_after_copy: false,
+        },
+        cancellation,
+        journal_path,
+        on_progress,
+    )
+}
+
+/// Same as `copy_approved_items_as`, optionally hashing written data before finalization.
+pub fn copy_approved_items_as_with_options(
+    run_id: String,
+    plan: &Plan,
+    decisions: &HashMap<String, Decision>,
+    options: CopyOptions,
     cancellation: &AtomicBool,
     journal_path: &Path,
     on_progress: impl FnMut(CopyProgress),
@@ -104,8 +159,9 @@ pub fn copy_approved_items_as(
             journal_path: journal_path.to_path_buf(),
             plan: plan.clone(),
             decisions: decisions.clone(),
+            verify_after_copy: options.verify_after_copy,
         },
-        dry_run,
+        options.dry_run,
         cancellation,
         on_progress,
         true,
@@ -178,6 +234,14 @@ fn execute_run(
     let source_root = PathBuf::from(&folder_pair.source_root);
     let destination_root = PathBuf::from(&folder_pair.destination_root);
     validate_journal_path(journal_path, &source_root)?;
+    let copy_context = CopyContext {
+        run_id: &run_id,
+        source_root: &source_root,
+        destination_root: &destination_root,
+        journal_path,
+        cancellation,
+        verify_after_copy: snapshot.verify_after_copy,
+    };
 
     let journal_parent = journal_path
         .parent()
@@ -232,6 +296,7 @@ fn execute_run(
                 "journalPath": canonical_journal_path,
                 "plan": plan,
                 "decisions": decisions,
+                "verifyAfterCopy": snapshot.verify_after_copy,
             }),
         )
         .map_err(|error| journal_error("Could not serialize the saved run", error))?;
@@ -302,15 +367,7 @@ fn execute_run(
             continue;
         }
 
-        let result = copy_one(
-            item,
-            &run_id,
-            &source_root,
-            &destination_root,
-            journal_path,
-            cancellation,
-            &mut on_progress,
-        )?;
+        let result = copy_one(item, &copy_context, &mut on_progress)?;
         on_progress(CopyProgress {
             run_id: run_id.clone(),
             item_id: item.id.clone(),
@@ -456,15 +513,29 @@ fn normalize_path(path: &Path) -> PathBuf {
     }
     normalized
 }
+#[derive(Clone, Copy)]
+struct CopyContext<'a> {
+    run_id: &'a str,
+    source_root: &'a Path,
+    destination_root: &'a Path,
+    journal_path: &'a Path,
+    cancellation: &'a AtomicBool,
+    verify_after_copy: bool,
+}
+
 fn copy_one(
     item: &PlanItem,
-    run_id: &str,
-    source_root: &Path,
-    destination_root: &Path,
-    journal_path: &Path,
-    cancellation: &AtomicBool,
+    context: &CopyContext<'_>,
     on_progress: &mut impl FnMut(CopyProgress),
 ) -> Result<CopyItemResult, SyncError> {
+    let CopyContext {
+        run_id,
+        source_root,
+        destination_root,
+        journal_path,
+        cancellation,
+        verify_after_copy,
+    } = *context;
     if !is_safe_relative_path(&item.source_relative_path)
         || !is_safe_relative_path(&item.destination_relative_path)
     {
@@ -651,6 +722,60 @@ fn copy_one(
         bytes_written,
         None,
     )?;
+
+    if verify_after_copy {
+        match verify_file_copy(&source_path, temp_file.path(), cancellation) {
+            Ok(true) => transition(
+                journal_path,
+                &mut journal_entry,
+                CopyState::Verified,
+                bytes_written,
+                None,
+            )?,
+            Ok(false) => {
+                return finish_item(
+                    item,
+                    journal_path,
+                    journal_entry,
+                    CopyState::Failed,
+                    bytes_written,
+                    Some(
+                        "Post-copy verification failed; the temporary file was not finalized."
+                            .into(),
+                    ),
+                );
+            }
+            Err(error) => {
+                let state = if error.code == SyncErrorCode::OperationCancelled {
+                    CopyState::Cancelled
+                } else {
+                    CopyState::Failed
+                };
+                return finish_item(
+                    item,
+                    journal_path,
+                    journal_entry,
+                    state,
+                    bytes_written,
+                    Some(format!(
+                        "Post-copy verification could not complete: {error}"
+                    )),
+                );
+            }
+        }
+        if source_is_stale(item, &source_file)
+            || source_path_is_stale(item, source_root, &source_path)
+        {
+            return finish_item(
+                item,
+                journal_path,
+                journal_entry,
+                CopyState::NeedsRescan,
+                bytes_written,
+                Some("The source changed during post-copy verification.".into()),
+            );
+        }
+    }
 
     if cancellation.load(Ordering::Relaxed) {
         return finish_item(
@@ -1182,6 +1307,43 @@ mod tests {
                 .unwrap()
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn optional_verification_is_journaled_before_finalization() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source_root = workspace.path().join("source");
+        let destination_root = workspace.path().join("destination");
+        fs::create_dir_all(&source_root).unwrap();
+        fs::create_dir_all(&destination_root).unwrap();
+        fs::write(source_root.join("file.bin"), b"verified payload").unwrap();
+        let plan = plan_for(&source_root, &destination_root);
+        let journal = workspace.path().join("state/journal.jsonl");
+        let report = crate::copy_approved_items_with_options(
+            &plan,
+            &approved_copy_decisions(&plan),
+            false,
+            &AtomicBool::new(false),
+            &journal,
+            true,
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(report.items[0].state, CopyState::Done);
+        let entries = read_run_journal(&journal, &report.run_id).unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.state == CopyState::Verified)
+        );
+        let snapshot: serde_json::Value =
+            serde_json::from_slice(&fs::read(run_snapshot_path(&journal, &report.run_id)).unwrap())
+                .unwrap();
+        assert_eq!(snapshot["verifyAfterCopy"], true);
+        assert_eq!(
+            fs::read(destination_root.join("file.bin")).unwrap(),
+            b"verified payload"
         );
     }
 

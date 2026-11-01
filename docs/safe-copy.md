@@ -17,6 +17,7 @@ After reviewing the missing files, explicitly apply:
 
 ```powershell
 cargo run -p syncwise-cli -- copy "C:\SyncWiseSamples\Source" "D:\SyncWiseSamples\Destination" --apply
+cargo run -p syncwise-cli -- copy "C:\SyncWiseSamples\Source" "D:\SyncWiseSamples\Destination" --apply --verify
 ```
 
 The CLI creates a fresh plan for each `copy` invocation. It approves only missing-file `Copy` items; conflicts and advisory duplicate matches are not silently copied or skipped as identical. The engine can accept explicit per-item duplicate decisions from future review clients.
