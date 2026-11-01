@@ -48,7 +48,11 @@ function connect(plan: Plan, blocked = false) {
       state = { revision: state.revision + 1, choices };
       return state as never;
     }
-    if (command === "review_preflight") {
+    if (command === "start_sync") {
+      expect(input.revision).toBe(state.revision);
+      return "run-1" as never;
+    }
+    if (command === "review_preflight" || command === "confirm_review") {
       const values = Object.values(state.choices);
       return { planId: plan.id, revision: state.revision, approvedCount: values.filter((choice) => choice === "approve").length,
         pendingCount: plan.items.length - values.length, rejectedCount: values.filter((choice) => choice === "reject").length,
@@ -65,7 +69,7 @@ function connect(plan: Plan, blocked = false) {
 describe("Review", () => {
   it("keeps 20,000 rows virtual and supports keyboard selection and bulk missing approval", async () => {
     const user = userEvent.setup(); const plan = fixture(20_000);
-    render(<Review plan={plan} initialDecisions={connect(plan)} onBack={vi.fn()} />);
+    render(<Review plan={plan} initialDecisions={connect(plan)} onBack={vi.fn()} onStarted={vi.fn()} />);
     const table = screen.getByRole("table", { name: "File comparison" });
     expect(table).toHaveAttribute("aria-rowcount", "20001");
     expect(within(table).getAllByRole("row").length).toBeLessThan(35);
@@ -78,12 +82,13 @@ describe("Review", () => {
     await user.click(within(modal).getByRole("checkbox"));
     await user.click(within(modal).getByRole("button", { name: "Confirm plan" }));
     expect(await screen.findByText("Plan confirmed")).toBeInTheDocument();
-    expect(vi.mocked(invoke).mock.calls.every(([command]) => !command.includes("copy"))).toBe(true);
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_sync")).toBe(false);
   });
 
   it("reviews evidence, reverses individual choices, and requires explicit confirmation", async () => {
     const user = userEvent.setup(); const plan = fixture(1, true);
-    render(<Review plan={plan} initialDecisions={connect(plan)} onBack={vi.fn()} />);
+    const onStarted = vi.fn();
+    render(<Review plan={plan} initialDecisions={connect(plan)} onBack={vi.fn()} onStarted={onStarted} />);
     await user.click(screen.getByRole("button", { name: "Approve missing" }));
     screen.getByRole("tab", { name: /Missing/ }).focus();
     await user.keyboard("{ArrowRight}");
@@ -102,11 +107,14 @@ describe("Review", () => {
     await user.click(within(modal).getByRole("checkbox"));
     await user.click(within(modal).getByRole("button", { name: "Confirm plan" }));
     expect(await screen.findByText("Plan confirmed")).toBeInTheDocument();
+    expect(vi.mocked(invoke).mock.calls.some(([command]) => command === "start_sync")).toBe(false);
+    await user.click(within(modal).getByRole("button", { name: "Start Sync" }));
+    expect(onStarted).toHaveBeenCalledWith("run-1", plan);
   });
 
   it("cannot confirm blocking preflight issues even after acknowledgement", async () => {
     const user = userEvent.setup(); const plan = fixture(1);
-    render(<Review plan={plan} initialDecisions={connect(plan, true)} onBack={vi.fn()} />);
+    render(<Review plan={plan} initialDecisions={connect(plan, true)} onBack={vi.fn()} onStarted={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Approve missing" }));
     await user.click(screen.getByRole("button", { name: "Review preflight" }));
     const modal = await screen.findByRole("dialog");

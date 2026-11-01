@@ -66,10 +66,41 @@ pub fn copy_approved_items(
     journal_path: &Path,
     on_progress: impl FnMut(CopyProgress),
 ) -> Result<CopyReport, SyncError> {
+    copy_approved_items_as(
+        new_run_id(),
+        plan,
+        decisions,
+        dry_run,
+        cancellation,
+        journal_path,
+        on_progress,
+    )
+}
+
+/// Same as `copy_approved_items` with a caller-chosen run ID so the run can be recorded before it starts.
+pub fn copy_approved_items_as(
+    run_id: String,
+    plan: &Plan,
+    decisions: &HashMap<String, Decision>,
+    dry_run: bool,
+    cancellation: &AtomicBool,
+    journal_path: &Path,
+    on_progress: impl FnMut(CopyProgress),
+) -> Result<CopyReport, SyncError> {
+    if run_id.is_empty()
+        || !run_id
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return Err(SyncError::new(
+            SyncErrorCode::InvalidInput,
+            "Run IDs may contain only letters, digits, and hyphens.",
+        ));
+    }
     execute_run(
         SavedRun {
             version: 1,
-            run_id: new_run_id(),
+            run_id,
             journal_path: journal_path.to_path_buf(),
             plan: plan.clone(),
             decisions: decisions.clone(),
@@ -280,6 +311,13 @@ fn execute_run(
             cancellation,
             &mut on_progress,
         )?;
+        on_progress(CopyProgress {
+            run_id: run_id.clone(),
+            item_id: item.id.clone(),
+            state: result.state,
+            bytes_written: result.bytes_written,
+            total_bytes: item.size_bytes,
+        });
         if result.state == CopyState::Cancelled {
             report.cancelled = true;
         }
@@ -1041,7 +1079,15 @@ fn preview_result(item: &PlanItem, decisions: &HashMap<String, Decision>) -> Cop
     }
 }
 
-fn new_run_id() -> String {
+/// Read a run's journal records without modifying the file; an incomplete final record is ignored.
+pub fn read_run_journal(path: &Path, run_id: &str) -> Result<Vec<JournalEntry>, SyncError> {
+    Ok(read_journal(path, TailPolicy::Inspect)?
+        .into_iter()
+        .filter(|entry| entry.run_id == run_id)
+        .collect())
+}
+
+pub fn new_run_id() -> String {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
@@ -1105,18 +1151,21 @@ mod tests {
         let plan = plan_for(&source_root, &destination_root);
         let journal = workspace.path().join("state/journal.jsonl");
 
+        let mut progress_states = Vec::new();
         let report = copy_approved_items(
             &plan,
             &approved_copy_decisions(&plan),
             false,
             &AtomicBool::new(false),
             &journal,
-            |_| {},
+            |progress| progress_states.push(progress.state),
         )
         .unwrap();
 
         assert_eq!(report.items.len(), 1);
         assert_eq!(report.items[0].state, CopyState::Done);
+        assert!(progress_states.contains(&CopyState::Copying));
+        assert_eq!(progress_states.last(), Some(&CopyState::Done));
         assert_eq!(
             fs::read(destination_root.join("nested/file.bin")).unwrap(),
             b"approved payload"

@@ -12,7 +12,12 @@ use walkdir::{DirEntry, WalkDir};
 mod planner;
 pub use planner::{generate_plan, generate_plan_with_cancellation};
 mod copier;
-pub use copier::{copy_approved_items, inspect_recovery, resume_run, run_snapshot_path};
+pub use copier::{
+    copy_approved_items, copy_approved_items_as, inspect_recovery, new_run_id, read_run_journal,
+    resume_run, run_snapshot_path,
+};
+mod store;
+pub use store::{RunItemSummary, RunStatus, RunSummary, Store};
 mod matching;
 pub use matching::{
     CandidateMatch, FileMatches, MatchGroup, MatchLabel, MatchingOptions, MatchingReport,
@@ -263,6 +268,7 @@ pub enum SyncErrorCode {
     ScanRootUnavailable,
     PlanNotExecutable,
     JournalUnavailable,
+    StoreUnavailable,
     InsufficientSpace,
     OperationCancelled,
 }
@@ -637,6 +643,7 @@ mod tests {
         CopyProgress::export_all_to(&output_directory).unwrap();
         CopyReport::export_all_to(&output_directory).unwrap();
         RecoveryReport::export_all_to(&output_directory).unwrap();
+        RunSummary::export_all_to(&output_directory).unwrap();
         Decision::export_all_to(&output_directory).unwrap();
         RunState::export_all_to(&output_directory).unwrap();
         SyncError::export_all_to(&output_directory).unwrap();

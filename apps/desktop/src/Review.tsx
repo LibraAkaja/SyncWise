@@ -31,8 +31,9 @@ function errorMessage(error: unknown): string {
     ? String(error.message) : String(error);
 }
 
-export default function Review({ plan, initialDecisions, onBack }: {
+export default function Review({ plan, initialDecisions, onBack, onStarted }: {
   plan: Plan; initialDecisions: DecisionState; onBack: (decisions: DecisionState) => void;
+  onStarted: (runId: string, plan: Plan) => void;
 }) {
   const [decisions, setDecisions] = useState(initialDecisions);
   const [tab, setTab] = useState<PlanItemKind>("copy");
@@ -96,11 +97,19 @@ export default function Review({ plan, initialDecisions, onBack }: {
   async function preflight(confirm = false) {
     setBusy(true); setError("");
     try {
-      const checked = await invoke<ReviewPreflight>("review_preflight", { planId: plan.id, revision: decisions.revision });
+      const checked = await invoke<ReviewPreflight>(confirm ? "confirm_review" : "review_preflight", { planId: plan.id, revision: decisions.revision });
       setSummary(checked);
-      if (confirm && checked.canPrepare) { setPrepared(true); closeSummary(); }
+      if (confirm && checked.canPrepare) setPrepared(true);
     } catch (failure) { setError(errorMessage(failure)); }
     finally { setBusy(false); }
+  }
+
+  async function startSync() {
+    setBusy(true); setError("");
+    try {
+      const runId = await invoke<string>("start_sync", { planId: plan.id, revision: decisions.revision });
+      onStarted(runId, plan);
+    } catch (failure) { setError(errorMessage(failure)); setBusy(false); }
   }
 
   async function resetMemory() {
@@ -192,8 +201,8 @@ export default function Review({ plan, initialDecisions, onBack }: {
         {summary.pendingCount > 0 && <p className="review-error">Decide or defer the remaining files before confirming.</p>}
         <ul className="preflight-issues">{summary.issues.slice(0, 50).map((issue, index) => <li className={issue.blocking ? "blocking-issue" : ""} key={index}>{issue.message}</li>)}</ul>{summary.issues.length > 50 && <p className="review-error">{summary.issues.length - 50} additional issues require a new scan.</p>}
         <label className="confirmation-check"><input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />I confirm the source, destination, and selected files.</label>
-        <p className="execution-gate">Copy execution is locked pending removable-drive safety validation.</p>
-        <div className="dialog-actions"><button className="secondary-button" type="button" onClick={closeSummary}>Back to review</button><button type="button" disabled={busy || !summary.canPrepare || !acknowledged} onClick={() => preflight(true)}><Check size={16} />Confirm plan</button><button type="button" disabled title="Removable-drive safety validation is pending">Start Sync</button></div>
+        {error && <p className="review-error" role="alert">{error}</p>}
+        <div className="dialog-actions"><button className="secondary-button" type="button" disabled={busy} onClick={closeSummary}>Back to review</button><button type="button" disabled={busy || prepared || !summary.canPrepare || !acknowledged} onClick={() => preflight(true)}><Check size={16} />Confirm plan</button><button type="button" disabled={busy || !prepared} onClick={startSync}>Start Sync</button></div>
       </>}
     </dialog>
   </main>;

@@ -198,6 +198,9 @@ fn approve_missing_files(plan: &Plan) -> HashMap<String, Decision> {
 }
 
 fn print_progress(progress: CopyProgress) {
+    if progress.state != CopyState::Copying {
+        return;
+    }
     let percent = progress
         .bytes_written
         .saturating_mul(100)
