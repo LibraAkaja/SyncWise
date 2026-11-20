@@ -8,6 +8,7 @@ Milestone 6 connects Setup scans to a Rust-owned review plan. It prepares decisi
 - The header retains labeled source/destination roots. Full roots are shown again in preflight confirmation.
 - Missing, Possible duplicates, Already present, Conflicts, and Errors tabs have counts and source-path search. Plan-level scan/preflight issues appear in Errors as well as file errors. Already present remains empty until content identity is implemented; similar names are not labeled identical.
 - The fixed-height TanStack Virtual table renders only a viewport of rows, not the complete library. Arrow keys, Home/End, and Page Up/Down select files; tab categories support arrow navigation. Selection exposes side-by-side paths, candidate scores/reasons, and shared-destination groups.
+- Search and decision filters (undecided, approved, rejected, deferred) combine within the selected category. Exact within-side duplicate groups can be browsed separately in pages of 100; only equal-size/full-hash matches are included, and unavailable files are counted.
 - Each copyable item has explicit approve, reject, or defer choices. Undo reverses decisions before confirmation. Returning to Setup retains the latest server decision revision.
 - Bulk approval is restricted to missing files. Current name-only duplicate tiers cannot be bulk-approved; each needs an individual approval. Bulk defer affects only undecided visible results. Conflicts/errors remain skipped and cannot be approved.
 - Rejections are remembered locally for the canonical root pair, source path/size/mtime, and candidate destination paths/size/mtime. Changed evidence no longer reuses the old rejection. Resetting memory affects future scans, not current decisions. There is no cloud synchronization.
@@ -20,7 +21,7 @@ Preflight runs on a blocking worker, rechecks roots, approved source size/mtime,
 
 The confirmation dialog names both complete roots and requires a checkbox plus an explicit **Confirm plan** action. It reruns preflight before marking preparation confirmed. Starting Sync now invokes the Milestone 7 execution flow only for this confirmed decision revision. Confirmation alone does not write user files or create a copy journal. Writability checks create/remove only a temporary destination probe. Physical removable-drive validation remains a release gate.
 
-Rejection memory is stored as `rejected-matches.json` in Tauri's app-data directory. It contains paths and metadata, not content; keep it private. SQLite migrations and run persistence are implemented for Milestone 7; saved profiles remain Milestone 9 work.
+Rejection memory is stored as `rejected-matches.json` in Tauri's app-data directory. It contains paths and metadata, not content; keep it private. SQLite migrations and run persistence are implemented for Milestone 7. Named folder-pair profiles are stored in the same local SQLite database. Names are unique without regard to case; saving an existing name updates that profile. Loading a profile revalidates both folders before they can be scanned. Recent run history is a read-only, newest-first view of at most 100 records with folder-path search and status filtering. Profiles and history contain local paths; keep the app-data directory private. The theme preference (system/light/dark) is stored in local browser settings.
 
 ## Verification
 

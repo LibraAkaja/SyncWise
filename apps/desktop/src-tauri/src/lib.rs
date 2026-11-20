@@ -177,6 +177,27 @@ fn cancel_scan(scan_id: String, tasks: State<'_, ScanTaskManager>) -> Result<boo
     }
 }
 
+#[tauri::command]
+fn list_profiles(app: AppHandle) -> Result<Vec<syncwise_engine::SavedProfile>, SyncError> {
+    review::open_store(&app)?.list_profiles()
+}
+
+#[tauri::command]
+fn save_profile(
+    app: AppHandle,
+    name: String,
+    source_path: String,
+    destination_path: String,
+) -> Result<syncwise_engine::SavedProfile, SyncError> {
+    let pair = validate_folder_roots(Path::new(&source_path), Path::new(&destination_path))?;
+    review::open_store(&app)?.save_profile(&name, &pair.source_root, &pair.destination_root)
+}
+
+#[tauri::command]
+fn delete_profile(app: AppHandle, profile_id: i64) -> Result<(), SyncError> {
+    review::open_store(&app)?.delete_profile(profile_id)
+}
+
 fn scan_one(
     app: &AppHandle,
     scan_id: &str,
@@ -208,6 +229,9 @@ pub fn run() {
             validate_folder_pair,
             start_scan,
             cancel_scan,
+            list_profiles,
+            save_profile,
+            delete_profile,
             review::review_decisions,
             review::review_preflight,
             review::reset_review_memory,
@@ -216,6 +240,7 @@ pub fn run() {
             sync::resume_sync,
             sync::cancel_sync,
             sync::get_run,
+            sync::list_run_history,
             sync::list_interrupted_runs,
             sync::abandon_run,
             sync::inspect_run

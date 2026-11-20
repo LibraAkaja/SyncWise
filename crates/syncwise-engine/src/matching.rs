@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    path::{Component, Path},
     sync::atomic::{AtomicBool, Ordering},
 };
 
@@ -98,9 +99,30 @@ pub struct MatchGroup {
 pub struct MatchingReport {
     pub matches: Vec<FileMatches>,
     pub groups: Vec<MatchGroup>,
+    #[serde(default)]
+    pub within_side_duplicates: WithinSideDuplicateReport,
     #[ts(type = "number")]
     pub candidate_comparisons: u64,
     pub posting_lists_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct WithinSideDuplicateGroup {
+    #[ts(type = "number")]
+    pub size_bytes: u64,
+    pub relative_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct WithinSideDuplicateReport {
+    pub source: Vec<WithinSideDuplicateGroup>,
+    pub destination: Vec<WithinSideDuplicateGroup>,
+    #[ts(type = "number")]
+    pub unavailable_files: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -392,6 +414,7 @@ pub fn match_files_with_cancellation(
     Ok(MatchingReport {
         matches,
         groups,
+        within_side_duplicates: WithinSideDuplicateReport::default(),
         candidate_comparisons: comparisons,
         posting_lists_truncated,
     })
@@ -515,7 +538,93 @@ pub fn match_scan_files_with_cancellation(
         }
     }
 
+    let mut unavailable_files = 0;
+    report.within_side_duplicates.source = find_within_side_duplicates(
+        &source.root,
+        &source.files,
+        cancellation,
+        &mut unavailable_files,
+        &mut source_partial,
+        &mut source_full,
+    )?;
+    report.within_side_duplicates.destination = find_within_side_duplicates(
+        &destination.root,
+        &destination.files,
+        cancellation,
+        &mut unavailable_files,
+        &mut destination_partial,
+        &mut destination_full,
+    )?;
+    report.within_side_duplicates.unavailable_files = unavailable_files;
     Ok(report)
+}
+
+fn find_within_side_duplicates(
+    root: &str,
+    files: &[FileEntry],
+    cancellation: &AtomicBool,
+    unavailable_files: &mut u64,
+    partial_hashes: &mut HashMap<std::path::PathBuf, [u8; 32]>,
+    full_hashes: &mut HashMap<std::path::PathBuf, [u8; 32]>,
+) -> Result<Vec<WithinSideDuplicateGroup>, SyncError> {
+    let mut by_size: BTreeMap<u64, Vec<&FileEntry>> = BTreeMap::new();
+    for file in files {
+        by_size.entry(file.size_bytes).or_default().push(file);
+    }
+
+    let mut duplicate_groups = Vec::new();
+    for (size, same_size_files) in by_size.into_iter().filter(|(_, group)| group.len() > 1) {
+        check_cancelled(cancellation)?;
+        let mut by_partial_hash: HashMap<[u8; 32], Vec<&FileEntry>> = HashMap::new();
+        for file in same_size_files {
+            check_cancelled(cancellation)?;
+            let relative = Path::new(&file.relative_path);
+            if relative.as_os_str().is_empty()
+                || !relative
+                    .components()
+                    .all(|part| matches!(part, Component::Normal(_)))
+            {
+                *unavailable_files = unavailable_files.saturating_add(1);
+                continue;
+            }
+            let path = Path::new(root).join(relative);
+            match cached_hash(&path, cancellation, partial_hashes, partial_hash_file) {
+                Ok(hash) => by_partial_hash.entry(hash).or_default().push(file),
+                Err(error) if error.code == SyncErrorCode::OperationCancelled => return Err(error),
+                Err(_) => *unavailable_files = unavailable_files.saturating_add(1),
+            }
+        }
+
+        for possible_duplicates in by_partial_hash
+            .into_values()
+            .filter(|group| group.len() > 1)
+        {
+            let mut by_full_hash: HashMap<[u8; 32], Vec<&FileEntry>> = HashMap::new();
+            for file in possible_duplicates {
+                check_cancelled(cancellation)?;
+                let path = Path::new(root).join(&file.relative_path);
+                match cached_hash(&path, cancellation, full_hashes, full_hash_file) {
+                    Ok(hash) => by_full_hash.entry(hash).or_default().push(file),
+                    Err(error) if error.code == SyncErrorCode::OperationCancelled => {
+                        return Err(error);
+                    }
+                    Err(_) => *unavailable_files = unavailable_files.saturating_add(1),
+                }
+            }
+            for mut identical_files in by_full_hash.into_values().filter(|group| group.len() > 1) {
+                identical_files.sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+                duplicate_groups.push(WithinSideDuplicateGroup {
+                    size_bytes: size,
+                    relative_paths: identical_files
+                        .into_iter()
+                        .map(|file| file.relative_path.clone())
+                        .collect(),
+                });
+            }
+        }
+    }
+    duplicate_groups.sort_by(|left, right| left.relative_paths.cmp(&right.relative_paths));
+    Ok(duplicate_groups)
 }
 
 fn cached_hash(
@@ -962,6 +1071,47 @@ mod tests {
     }
 
     #[test]
+    fn scan_matching_reports_exact_within_side_duplicates_only() {
+        let root = tempfile::tempdir().unwrap();
+        let source_root = root.path().join("source");
+        let destination_root = root.path().join("destination");
+        std::fs::create_dir_all(&source_root).unwrap();
+        std::fs::create_dir_all(&destination_root).unwrap();
+        std::fs::write(source_root.join("first.bin"), b"same bytes").unwrap();
+        std::fs::write(source_root.join("second.bin"), b"same bytes").unwrap();
+        std::fs::write(source_root.join("different.bin"), b"same bytez").unwrap();
+        std::fs::write(destination_root.join("copy-a.bin"), b"identical").unwrap();
+        std::fs::write(destination_root.join("copy-b.bin"), b"identical").unwrap();
+
+        let source = crate::scan_directory(&source_root, &AtomicBool::new(false), |_| {}).unwrap();
+        let destination =
+            crate::scan_directory(&destination_root, &AtomicBool::new(false), |_| {}).unwrap();
+        let report = match_scan_files_with_cancellation(
+            &source,
+            &destination,
+            &MatchingOptions::default(),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+
+        assert_eq!(
+            report.within_side_duplicates.source,
+            vec![WithinSideDuplicateGroup {
+                size_bytes: b"same bytes".len() as u64,
+                relative_paths: vec!["first.bin".into(), "second.bin".into()],
+            }]
+        );
+        assert_eq!(
+            report.within_side_duplicates.destination,
+            vec![WithinSideDuplicateGroup {
+                size_bytes: b"identical".len() as u64,
+                relative_paths: vec!["copy-a.bin".into(), "copy-b.bin".into()],
+            }]
+        );
+        assert_eq!(report.within_side_duplicates.unavailable_files, 0);
+    }
+
+    #[test]
     fn candidate_work_is_bounded_results_are_deterministic_and_cancellable() {
         let destination: Vec<_> = (0..100)
             .map(|index| file(&format!("folder-{index}/Shared Title.mp3")))
@@ -984,6 +1134,21 @@ mod tests {
                 .unwrap_err()
                 .code,
             SyncErrorCode::OperationCancelled
+        );
+    }
+
+    #[test]
+    fn old_matching_reports_deserialize_without_within_side_duplicates() {
+        let report: MatchingReport = serde_json::from_value(serde_json::json!({
+            "matches": [],
+            "groups": [],
+            "candidateComparisons": 0,
+            "postingListsTruncated": false,
+        }))
+        .unwrap();
+        assert_eq!(
+            report.within_side_duplicates,
+            WithinSideDuplicateReport::default()
         );
     }
 

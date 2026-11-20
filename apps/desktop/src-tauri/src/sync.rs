@@ -9,9 +9,9 @@ use std::{
 };
 
 use syncwise_engine::{
-    CopyOptions, CopyProgress, CopyReport, Decision, Plan, PlanItemKind, RecoveryReport, RunStatus,
-    RunSummary, Store, SyncError, copy_approved_items_as_with_options, inspect_recovery,
-    new_run_id, read_run_journal, resume_run, run_snapshot_path,
+    CopyOptions, CopyProgress, CopyReport, Decision, Plan, PlanItemKind, RecoveryReport,
+    RunHistoryEntry, RunStatus, RunSummary, Store, SyncError, copy_approved_items_as_with_options,
+    inspect_recovery, new_run_id, read_run_journal, resume_run, run_snapshot_path,
 };
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -330,6 +330,11 @@ pub fn get_run(app: AppHandle, run_id: String) -> Result<RunSummary, SyncError> 
     open_store(&app)?
         .get_run(&run_id)?
         .ok_or_else(|| error("The run no longer exists."))
+}
+
+#[tauri::command]
+pub fn list_run_history(app: AppHandle) -> Result<Vec<RunHistoryEntry>, SyncError> {
+    open_store(&app)?.list_run_history(100)
 }
 
 #[tauri::command]

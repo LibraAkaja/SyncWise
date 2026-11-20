@@ -22,6 +22,7 @@ Rust is the source of truth for the report. Engine tests generate TypeScript con
 6. Score retained candidates with core-title similarity (weight 0.50), filename-artist similarity (0.20), and size plausibility (0.10), plus audio tag similarity (0.20) and duration similarity (0.10) when available. Missing signals are excluded and the score is renormalized. These weights are ranking aids, not identity claims.
 7. For retrieved candidates with equal file sizes, compare BLAKE3 partial hashes over file length plus the first and last 64 KiB. Only partial matches proceed to full streaming BLAKE3 hashes. Equal full hashes produce `Identical`; equal size or partial hashes alone never do. Hash read failures are shown as unavailable evidence. The matcher caches each successfully computed stage per file during planning.
 8. Emit retained candidates with scores and evidence/penalty reasons. Greedy best-score assignment suggests at most one source per destination and vice versa. Sources choosing the same best destination are explicitly grouped for review; no candidate is discarded merely because another source has a better score.
+9. Separately report exact duplicates within each side. Files are grouped by indexed size, compared with partial BLAKE3 hashes, then full streaming hashes only for partial matches. These checks reuse hashes already computed for cross-side candidates. Unreadable/invalid paths are counted as unavailable; they are not reported as duplicates.
 
 Deterministic path ordering breaks score/retrieval ties. Matching can be cancelled between indexed/scored files. Scoring work is bounded by source count times the configurable candidate limit (default 20, maximum 100). Retrieval work also depends on filename length and posting-list length, rather than a strict O(n*K) bound for the whole algorithm.
 
@@ -37,7 +38,7 @@ The name-only tiers retain their Milestone 5 thresholds; Milestone 8 adds strong
 | Uncertain | Title and weighted score at least 0.78, but missing/conflicting artist evidence, differing versions, or fuzzy-only title evidence. Requires review; no automatic bulk approval. |
 | No candidate | Nothing retained above the review threshold. This does not prove that the folders contain no duplicate content. |
 
-Very Likely does not assert byte identity; different encodings may be the same recording. `Identical` is content identity, not proof that metadata is correct. Fuzzy-only matches intentionally remain Uncertain. Matching tiers never approve a copy, including `Identical`; the user must review and explicitly choose.
+Very Likely does not assert byte identity; different encodings may be the same recording. `Identical` is content identity, not proof that metadata is correct. Fuzzy-only matches intentionally remain Uncertain. Matching tiers never approve a copy, including `Identical`; the user must review and explicitly choose. Within-side duplicate reports require equal size and full BLAKE3 hash, do not delete or skip files, and may add disk reads for equal-sized files not already hashed as candidates.
 
 ## Quality Evidence
 

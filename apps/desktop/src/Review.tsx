@@ -8,6 +8,7 @@ import type { Decision } from "./types/generated/Decision";
 import type { DecisionChange } from "./types/generated/DecisionChange";
 import type { DecisionState } from "./types/generated/DecisionState";
 import type { ReviewPreflight } from "./types/generated/ReviewPreflight";
+import ThemeControl, { type ThemePreference } from "./ThemeControl";
 
 const tabs: { kind: PlanItemKind; label: string }[] = [
   { kind: "copy", label: "Missing" },
@@ -16,6 +17,8 @@ const tabs: { kind: PlanItemKind; label: string }[] = [
   { kind: "conflict", label: "Conflicts" },
   { kind: "error", label: "Errors" },
 ];
+const DUPLICATE_PAGE_SIZE = 100;
+const DUPLICATE_PATH_PAGE_SIZE = 100;
 
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes.toLocaleString()} B`;
@@ -31,13 +34,18 @@ function errorMessage(error: unknown): string {
     ? String(error.message) : String(error);
 }
 
-export default function Review({ plan, initialDecisions, onBack, onStarted }: {
+export default function Review({ plan, initialDecisions, onBack, onStarted, theme = "system", onThemeChange = () => {} }: {
   plan: Plan; initialDecisions: DecisionState; onBack: (decisions: DecisionState) => void;
   onStarted: (runId: string, plan: Plan) => void;
+  theme?: ThemePreference; onThemeChange?: (theme: ThemePreference) => void;
 }) {
   const [decisions, setDecisions] = useState(initialDecisions);
   const [tab, setTab] = useState<PlanItemKind>("copy");
   const [search, setSearch] = useState("");
+  const [decisionFilter, setDecisionFilter] = useState("all");
+  const [showWithinDuplicates, setShowWithinDuplicates] = useState(false);
+  const [duplicatePage, setDuplicatePage] = useState(0);
+  const [duplicatePathPages, setDuplicatePathPages] = useState<Map<string, number>>(() => new Map());
   const query = useDeferredValue(search.trim().toLocaleLowerCase());
   const [selectedId, setSelectedId] = useState(plan.items.find((item) => item.kind === "copy")?.id ?? plan.items[0]?.id ?? "");
   const [busy, setBusy] = useState(false);
@@ -60,9 +68,21 @@ export default function Review({ plan, initialDecisions, onBack, onStarted }: {
   const scrollRef = useRef<HTMLDivElement>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const preflightButtonRef = useRef<HTMLButtonElement>(null);
-  const rows = reviewItems.filter((item) => item.kind === tab && (!query || item.sourceRelativePath.toLocaleLowerCase().includes(query)));
+  const rows = reviewItems.filter((item) => {
+    const choice = decisions.choices[item.id];
+    const matchesDecision = decisionFilter === "all"
+      || (decisionFilter === "pending" && !choice)
+      || choice === decisionFilter;
+    return item.kind === tab
+      && matchesDecision
+      && (!query || item.sourceRelativePath.toLocaleLowerCase().includes(query));
+  });
   const virtual = useVirtualizer({ count: rows.length, getScrollElement: () => scrollRef.current,
     estimateSize: () => 58, overscan: 5, scrollMargin: 38, initialRect: { width: 800, height: 420 } });
+  const duplicateGroups = [
+    ...(plan.matching?.withinSideDuplicates.source ?? []).map((group) => ({ side: "Source", group })),
+    ...(plan.matching?.withinSideDuplicates.destination ?? []).map((group) => ({ side: "Destination", group })),
+  ];
   const selected = indexes.items.get(selectedId);
   const candidates = selected ? indexes.matches.get(selected.sourceRelativePath) ?? [] : [];
   const [candidateIndex, setCandidateIndex] = useState(0);
@@ -72,6 +92,13 @@ export default function Review({ plan, initialDecisions, onBack, onStarted }: {
   const pending = plan.items.filter((item) => (item.kind === "copy" || item.kind === "possible_duplicate") && !decisions.choices[item.id]).length;
   const approved = Object.values(decisions.choices).filter((choice) => choice === "approve").length;
   const counts = new Map(tabs.map(({ kind }) => [kind, reviewItems.filter((item) => item.kind === kind).length]));
+
+  useEffect(() => {
+    if (!rows.some((item) => item.id === selectedId)) {
+      setSelectedId(rows[0]?.id ?? "");
+      setCandidateIndex(0);
+    }
+  }, [rows, selectedId]);
 
   useEffect(() => {
     if (summary && !dialogRef.current?.open) dialogRef.current?.showModal();
@@ -151,19 +178,63 @@ export default function Review({ plan, initialDecisions, onBack, onStarted }: {
     </header>
     <div className="review-toolbar">
       <label className="search-field"><Search size={16} /><input type="search" aria-label="Search source files" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search files" /></label>
+      <label className="filter-control">Decision
+        <select aria-label="Filter by decision" value={decisionFilter} onChange={(event) => setDecisionFilter(event.target.value)}>
+          <option value="all">All decisions</option><option value="pending">Undecided</option>
+          <option value="approve">Approved</option><option value="reject">Rejected</option><option value="defer">Deferred</option>
+        </select>
+      </label>
+      <ThemeControl value={theme} onChange={onThemeChange} />
       <button className="secondary-button" type="button" disabled={busy || history.length === 0} onClick={() => change(history[history.length - 1], false, true)}><Undo2 size={16} />Undo decision</button>
       <button className="secondary-button" type="button" disabled={busy || memoryReset} onClick={resetMemory}>Reset remembered rejections</button>
     </div>
     {error && <p className="review-error" role="alert">{error}</p>}
     {memoryReset && <p role="status" className="review-notice">Remembered rejections cleared for future scans. Current decisions are unchanged.</p>}
     {plan.matching?.postingListsTruncated && <p className="review-notice">Candidate retrieval was limited. Some duplicate suggestions may be missing.</p>}
-    <div className="review-layout">
+    <div className="duplicate-toggle-row">
+      <button className="secondary-button" type="button" aria-pressed={showWithinDuplicates} onClick={() => { setShowWithinDuplicates((visible) => !visible); setDuplicatePage(0); }}>
+        {showWithinDuplicates ? "Back to match review" : `Within-side duplicates (${duplicateGroups.length.toLocaleString()} groups)`}
+      </button>
+      {(plan.matching?.withinSideDuplicates.unavailableFiles ?? 0) > 0 && <span role="status">{plan.matching?.withinSideDuplicates.unavailableFiles.toLocaleString()} files could not be checked for identical content.</span>}
+    </div>
+    {showWithinDuplicates ? <section className="within-duplicates" aria-labelledby="within-duplicates-heading">
+      <h2 id="within-duplicates-heading">Exact duplicates within each folder</h2>
+      <p>Groups are based on matching file size and full BLAKE3 content hashes. No files are changed.</p>
+      {duplicateGroups.length > DUPLICATE_PAGE_SIZE && <nav className="duplicate-pagination" aria-label="Duplicate group pages">
+        <button className="secondary-button" type="button" disabled={duplicatePage === 0} onClick={() => setDuplicatePage((page) => page - 1)}>Previous groups</button>
+        <span role="status" aria-live="polite">Showing groups {(duplicatePage * DUPLICATE_PAGE_SIZE + 1).toLocaleString()}–{Math.min((duplicatePage + 1) * DUPLICATE_PAGE_SIZE, duplicateGroups.length).toLocaleString()} of {duplicateGroups.length.toLocaleString()}</span>
+        <button className="secondary-button" type="button" disabled={(duplicatePage + 1) * DUPLICATE_PAGE_SIZE >= duplicateGroups.length} onClick={() => setDuplicatePage((page) => page + 1)}>Next groups</button>
+      </nav>}
+      {duplicateGroups.length ? <div className="duplicate-table" role="table" aria-label="Within-side duplicate files" aria-rowcount={duplicateGroups.length + 1} tabIndex={0}>
+        <div className="duplicate-table-header" role="row"><span role="columnheader">Folder side</span><span role="columnheader">Size</span><span role="columnheader">Identical files</span></div>
+        <div role="rowgroup">
+          {duplicateGroups.slice(duplicatePage * DUPLICATE_PAGE_SIZE, (duplicatePage + 1) * DUPLICATE_PAGE_SIZE).map((entry, index) => {
+            const groupKey = `${entry.side}-${entry.group.relativePaths[0]}`;
+            const pathPage = duplicatePathPages.get(groupKey) ?? 0;
+            const paths = entry.group.relativePaths.slice(
+              pathPage * DUPLICATE_PATH_PAGE_SIZE,
+              (pathPage + 1) * DUPLICATE_PATH_PAGE_SIZE,
+            );
+            return <div key={`${entry.side}-${entry.group.relativePaths[0]}`} role="row" aria-rowindex={duplicatePage * DUPLICATE_PAGE_SIZE + index + 2} className="duplicate-table-row">
+              <span role="cell">{entry.side}</span><span role="cell">{formatBytes(entry.group.sizeBytes)}</span>
+              <span role="cell"><ul>{paths.map((path) => <li key={path}>{path}</li>)}</ul>
+                {entry.group.relativePaths.length > DUPLICATE_PATH_PAGE_SIZE && <nav className="duplicate-path-pagination" aria-label={`Files in ${entry.side} duplicate group`}>
+                  <button className="text-button" type="button" disabled={pathPage === 0} onClick={() => setDuplicatePathPages((current) => new Map(current).set(groupKey, pathPage - 1))}>Previous files</button>
+                  <span role="status" aria-live="polite">Showing {(pathPage * DUPLICATE_PATH_PAGE_SIZE + 1).toLocaleString()}–{Math.min((pathPage + 1) * DUPLICATE_PATH_PAGE_SIZE, entry.group.relativePaths.length).toLocaleString()} of {entry.group.relativePaths.length.toLocaleString()}</span>
+                  <button className="text-button" type="button" disabled={(pathPage + 1) * DUPLICATE_PATH_PAGE_SIZE >= entry.group.relativePaths.length} onClick={() => setDuplicatePathPages((current) => new Map(current).set(groupKey, pathPage + 1))}>Next files</button>
+                </nav>}
+              </span>
+            </div>;
+          })}
+        </div>
+      </div> : <div className="review-empty"><Folder size={28} /><p>No exact within-side duplicates were found.</p></div>}
+    </section> : <div className="review-layout">
       <section className="review-list" aria-label="Comparison results">
         <div className="review-tabs" role="tablist" aria-label="Result categories">{tabs.map(({ kind, label }, index) => <button key={kind} type="button" role="tab" tabIndex={tab === kind ? 0 : -1} aria-selected={tab === kind} aria-controls="result-panel" id={`tab-${kind}`} onClick={() => chooseTab(kind)} onKeyDown={(event) => {
           const next = event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowLeft" ? (index + tabs.length - 1) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
           if (next >= 0) { event.preventDefault(); chooseTab(tabs[next].kind); event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>("[role=tab]")[next]?.focus(); }
         }}>{label}<span>{counts.get(kind)?.toLocaleString()}</span></button>)}</div>
-        <div className="list-actions"><span>{rows.length.toLocaleString()} results</span>
+        <div className="list-actions"><span role="status" aria-live="polite">{rows.length.toLocaleString()} results</span>
           {tab === "copy" && <button className="text-button" type="button" disabled={busy || !rows.some((item) => !decisions.choices[item.id])} onClick={() => change(rows.filter((item) => !decisions.choices[item.id]).map((item) => ({ itemId: item.id, decision: "approve" })), true)}><Check size={15} />Approve missing</button>}
           <button className="text-button" type="button" disabled={busy || !rows.some((item) => (item.kind === "copy" || item.kind === "possible_duplicate") && !decisions.choices[item.id])} onClick={() => change(rows.filter((item) => (item.kind === "copy" || item.kind === "possible_duplicate") && !decisions.choices[item.id]).map((item) => ({ itemId: item.id, decision: "defer" })), true)}><Clock3 size={15} />Defer undecided</button>
         </div>
@@ -196,7 +267,7 @@ export default function Review({ plan, initialDecisions, onBack, onStarted }: {
           {actionable && <div className="decision-controls" role="group" aria-label="Decision for selected file">{([{ choice: "approve", label: "Approve copy", Icon: Check }, { choice: "reject", label: "Reject copy", Icon: X }, { choice: "defer", label: "Defer", Icon: Clock3 }] as const).map(({ choice, label, Icon }) => <button key={choice} type="button" className="secondary-button" aria-pressed={decisions.choices[selected.id] === choice} disabled={busy} onClick={() => change([{ itemId: selected.id, decision: choice as Decision }])}><Icon size={16} />{label}</button>)}</div>}
         </> : <p className="review-muted">No file selected.</p>}
       </aside>
-    </div>
+    </div>}
     <footer className="review-footer"><div role="status" aria-live="polite"><strong>{approved.toLocaleString()} approved</strong><span>{pending.toLocaleString()} undecided</span>{busy && <span>Checking...</span>}{prepared && <span className="prepared-status"><ShieldCheck size={16} />Plan confirmed</span>}</div><button ref={preflightButtonRef} type="button" disabled={busy || approved === 0} onClick={() => preflight()}><ArrowRight size={17} />Review preflight</button></footer>
     <dialog className="preflight-dialog" ref={dialogRef} onCancel={(event) => { event.preventDefault(); closeSummary(); }} aria-labelledby="preflight-title">
       <div className="dialog-heading"><h2 id="preflight-title">Confirm sync plan</h2><button className="icon-button" type="button" aria-label="Close preflight" title="Close preflight" onClick={closeSummary}><X size={18} /></button></div>

@@ -17,6 +17,14 @@ pub struct ReviewStore {
 
 pub const DATABASE_FILE: &str = "syncwise.sqlite";
 
+pub fn open_store(app: &AppHandle) -> Result<Store, SyncError> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| error("Local application state directory is unavailable."))?;
+    Store::open(&data_dir.join(DATABASE_FILE))
+}
+
 /// Local state must never live inside the source folder, which SyncWise keeps read-only.
 pub fn ensure_outside_source(
     directory: &std::path::Path,

@@ -11,7 +11,9 @@ import type { DecisionState } from "./types/generated/DecisionState";
 import Review from "./Review";
 import Execution from "./Execution";
 import type { RunSummary } from "./types/generated/RunSummary";
+import type { RunHistoryEntry } from "./types/generated/RunHistoryEntry";
 import type { RecoveryReport } from "./types/generated/RecoveryReport";
+import ThemeControl, { type ThemePreference } from "./ThemeControl";
 import "./App.css";
 
 type FolderValidationStatus = "incomplete" | "checking" | "valid" | "invalid";
@@ -38,6 +40,23 @@ type ScanResults = {
   source: ScanResult | null;
   destination: ScanResult | null;
 };
+
+type SavedProfile = {
+  id: number;
+  name: string;
+  sourceRoot: string;
+  destinationRoot: string;
+  updatedMs: number;
+};
+
+function initialTheme(): ThemePreference {
+  try {
+    const saved = localStorage.getItem("syncwise-theme");
+    return saved === "light" || saved === "dark" ? saved : "system";
+  } catch {
+    return "system";
+  }
+}
 
 const emptyScanProgress: ScanProgress = {
   filesScanned: 0,
@@ -96,6 +115,16 @@ function App() {
   const [interrupted, setInterrupted] = useState<RunSummary[]>([]);
   const [inspection, setInspection] = useState<{ runId: string; report: RecoveryReport } | null>(null);
   const [recoveryError, setRecoveryError] = useState("");
+  const [profiles, setProfiles] = useState<SavedProfile[]>([]);
+  const [profileName, setProfileName] = useState("");
+  const [selectedProfileId, setSelectedProfileId] = useState("");
+  const [profileError, setProfileError] = useState("");
+  const [theme, setTheme] = useState<ThemePreference>(initialTheme);
+  const [themeError, setThemeError] = useState("");
+  const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
+  const [historySearch, setHistorySearch] = useState("");
+  const [historyStatus, setHistoryStatus] = useState("all");
+  const [historyError, setHistoryError] = useState("");
   const activeScanId = useRef<string | null>(null);
   const unlistenProgress = useRef<UnlistenFn | null>(null);
   const unlistenCompletion = useRef<UnlistenFn | null>(null);
@@ -130,6 +159,8 @@ function App() {
 
   useEffect(() => {
     void refreshInterruptedRuns();
+    void refreshProfiles();
+    void refreshRunHistory();
     return () => {
       stopListening();
       if (activeScanId.current) {
@@ -138,12 +169,86 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    const preference = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const applyTheme = () => {
+      document.documentElement.dataset.theme =
+        theme === "system" ? (preference?.matches ? "dark" : "light") : theme;
+    };
+    applyTheme();
+    if (theme === "system") preference?.addEventListener("change", applyTheme);
+    try {
+      localStorage.setItem("syncwise-theme", theme);
+      setThemeError("");
+    } catch {
+      setThemeError("Theme is active but could not be saved on this device.");
+    }
+    return () => preference?.removeEventListener("change", applyTheme);
+  }, [theme]);
+
   async function refreshInterruptedRuns() {
     try {
       setInterrupted(await invoke<RunSummary[]>("list_interrupted_runs"));
       setRecoveryError("");
     } catch (caughtError) {
       setRecoveryError(messageFromError(caughtError));
+    }
+  }
+
+  async function refreshProfiles() {
+    try {
+      setProfiles(await invoke<SavedProfile[]>("list_profiles"));
+      setProfileError("");
+    } catch (caughtError) {
+      setProfileError(messageFromError(caughtError));
+    }
+  }
+
+  async function refreshRunHistory() {
+    try {
+      setRunHistory(await invoke<RunHistoryEntry[]>("list_run_history"));
+      setHistoryError("");
+    } catch (caughtError) {
+      setHistoryError(messageFromError(caughtError));
+    }
+  }
+
+  async function saveProfile() {
+    if (!validatedPair || !profileName.trim()) return;
+    setProfileError("");
+    try {
+      const profile = await invoke<SavedProfile>("save_profile", {
+        name: profileName,
+        sourcePath: validatedPair.sourceRoot,
+        destinationPath: validatedPair.destinationRoot,
+      });
+      setProfiles((current) => [...current.filter((entry) => entry.id !== profile.id), profile]
+        .sort((left, right) => left.name.localeCompare(right.name)));
+      setSelectedProfileId(String(profile.id));
+      setProfileName("");
+    } catch (caughtError) {
+      setProfileError(messageFromError(caughtError));
+    }
+  }
+
+  async function loadProfile() {
+    const profile = profiles.find((entry) => String(entry.id) === selectedProfileId);
+    if (!profile) return;
+    setSourcePath(profile.sourceRoot);
+    setDestinationPath(profile.destinationRoot);
+    await validateFolders(profile.sourceRoot, profile.destinationRoot);
+  }
+
+  async function deleteProfile() {
+    const profileId = Number(selectedProfileId);
+    if (!Number.isSafeInteger(profileId)) return;
+    setProfileError("");
+    try {
+      await invoke("delete_profile", { profileId });
+      setProfiles((current) => current.filter((entry) => entry.id !== profileId));
+      setSelectedProfileId("");
+    } catch (caughtError) {
+      setProfileError(messageFromError(caughtError));
     }
   }
 
@@ -288,12 +393,20 @@ function App() {
     return <Execution key={executionRun} runId={executionRun} onClose={() => {
       setExecutionRun(null); setShowReview(false); setReview(null);
       void refreshInterruptedRuns();
-    }} />;
+      void refreshRunHistory();
+    }} theme={theme} onThemeChange={setTheme} />;
   }
 
   if (showReview && review) {
-    return <Review key={review.plan.id} plan={review.plan} initialDecisions={review.decisions} onBack={(decisions) => { setReview({ ...review, decisions }); setShowReview(false); }} onStarted={(runId) => setExecutionRun(runId)} />;
+    return <Review key={review.plan.id} plan={review.plan} initialDecisions={review.decisions} onBack={(decisions) => { setReview({ ...review, decisions }); setShowReview(false); }} onStarted={(runId) => setExecutionRun(runId)} theme={theme} onThemeChange={setTheme} />;
   }
+
+  const filteredHistory = runHistory.filter((run) => {
+    const query = historySearch.trim().toLocaleLowerCase();
+    const matchesText = !query || `${run.sourceRoot}\n${run.destinationRoot}\n${run.runId}`
+      .toLocaleLowerCase().includes(query);
+    return matchesText && (historyStatus === "all" || run.status === historyStatus);
+  });
 
   return (
     <main className="container">
@@ -301,6 +414,10 @@ function App() {
         <p className="eyebrow">SYNCWISE / SETUP</p>
         <h1 id="app-title">Choose folders</h1>
         <p className="summary">Select where files come from and where they go.</p>
+        <div className="setup-preferences">
+          <ThemeControl value={theme} onChange={setTheme} />
+          {themeError && <p className="review-error" role="status">{themeError}</p>}
+        </div>
 
         {interrupted.map((run) => <div className="review-notice recovery-banner" role="alert" key={run.runId}>
           <p><strong>An earlier sync did not finish.</strong> {run.doneItems.toLocaleString()} of {run.totalItems.toLocaleString()} files were copied to {run.destinationRoot}. Nothing was deleted or replaced.</p>
@@ -315,6 +432,78 @@ function App() {
           </div>}
         </div>)}
         {recoveryError && <p className="review-error" role="alert">{recoveryError}</p>}
+
+        <section className="profile-section" aria-label="Saved profiles">
+          <div className="profile-controls">
+            <label>
+              Saved profiles
+              <select
+                aria-label="Saved profiles"
+                value={selectedProfileId}
+                onChange={(event) => setSelectedProfileId(event.target.value)}
+              >
+                <option value="">Choose a saved folder pair</option>
+                {profiles.map((profile) => (
+                  <option key={profile.id} value={profile.id}>{profile.name}</option>
+                ))}
+              </select>
+            </label>
+            <button type="button" className="secondary-button" disabled={!selectedProfileId || scanStatus === "running" || validationStatus === "checking"} onClick={() => void loadProfile()}>
+              Load profile
+            </button>
+            <button type="button" className="secondary-button" disabled={!selectedProfileId || scanStatus === "running"} onClick={() => void deleteProfile()}>
+              Delete profile
+            </button>
+          </div>
+          <div className="profile-save">
+            <label htmlFor="profile-name">Save current folders as</label>
+            <input id="profile-name" value={profileName} maxLength={80} onChange={(event) => setProfileName(event.target.value)} placeholder="e.g. Music backup" />
+            <button type="button" disabled={!validatedPair || !profileName.trim() || scanStatus === "running"} onClick={() => void saveProfile()}>
+              Save profile
+            </button>
+          </div>
+          {profileError && <p className="review-error" role="alert">{profileError}</p>}
+        </section>
+
+        <section className="history-section" aria-labelledby="history-heading">
+          <div className="history-heading">
+            <div>
+              <h2 id="history-heading">Sync history</h2>
+              <p>Recent runs are stored locally; showing up to 100.</p>
+            </div>
+            <button type="button" className="secondary-button" onClick={() => void refreshRunHistory()}>Refresh history</button>
+          </div>
+          <div className="history-filters">
+            <label>
+              Search run history
+              <input aria-label="Search run history" type="search" value={historySearch} onChange={(event) => setHistorySearch(event.target.value)} placeholder="Folder path or run ID" />
+            </label>
+            <label>
+              Run status
+              <select aria-label="Filter history by status" value={historyStatus} onChange={(event) => setHistoryStatus(event.target.value)}>
+                <option value="all">All statuses</option>
+                <option value="running">Running</option>
+                <option value="completed">Completed</option>
+                <option value="needs_attention">Needs attention</option>
+                <option value="cancelled">Cancelled</option>
+                <option value="abandoned">Dismissed</option>
+              </select>
+            </label>
+          </div>
+          {historyError && <p className="review-error" role="alert">{historyError}</p>}
+          <p className="history-count" role="status" aria-live="polite">{filteredHistory.length.toLocaleString()} runs</p>
+          {filteredHistory.length > 0 ? <ul className="history-list" aria-label="Recent sync runs">
+            {filteredHistory.map((run) => <li key={run.runId}>
+              <div>
+                <strong>{run.status.replace("_", " ")}</strong>
+                <span>{new Date(run.startedMs).toLocaleString()}</span>
+                <span className="history-roots" title={`${run.sourceRoot} → ${run.destinationRoot}`}>{run.sourceRoot} → {run.destinationRoot}</span>
+                <span>{run.doneItems.toLocaleString()} / {run.totalItems.toLocaleString()} files · {run.bytesWritten.toLocaleString()} bytes written</span>
+                {run.error && <span className="history-error">{run.error}</span>}
+              </div>
+            </li>)}
+          </ul> : !historyError && <div className="history-empty"><p>{runHistory.length ? "No runs match these filters." : "No sync runs yet."}</p></div>}
+        </section>
 
         <div className="folder-list">
           <div className="folder-row">
