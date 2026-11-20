@@ -84,6 +84,16 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX journal_run ON journal(run_id);",
     "ALTER TABLE file_index ADD COLUMN audio_metadata_json TEXT;",
+    "CREATE TABLE profiles (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        source_root TEXT NOT NULL,
+        destination_root TEXT NOT NULL,
+        updated_ms INTEGER NOT NULL,
+        CHECK (length(trim(name)) BETWEEN 1 AND 80),
+        CHECK (length(source_root) > 0),
+        CHECK (length(destination_root) > 0)
+    );",
 ];
 
 const KEPT_UNREFERENCED_SCANS: i64 = 5;
@@ -141,6 +151,37 @@ pub struct RunSummary {
     pub attention_items: Vec<RunItemSummary>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(rename_all = "camelCase")]
+pub struct RunHistoryEntry {
+    pub run_id: String,
+    pub source_root: String,
+    pub destination_root: String,
+    pub status: RunStatus,
+    #[ts(type = "number")]
+    pub started_ms: u64,
+    #[ts(type = "number | null")]
+    pub finished_ms: Option<u64>,
+    #[ts(type = "number")]
+    pub total_items: u64,
+    #[ts(type = "number")]
+    pub done_items: u64,
+    #[ts(type = "number")]
+    pub bytes_written: u64,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedProfile {
+    pub id: i64,
+    pub name: String,
+    pub source_root: String,
+    pub destination_root: String,
+    pub updated_ms: i64,
+}
+
 pub struct Store {
     connection: Connection,
 }
@@ -195,6 +236,77 @@ impl Store {
         self.connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .map_err(db_error)
+    }
+
+    pub fn save_profile(
+        &mut self,
+        name: &str,
+        source_root: &str,
+        destination_root: &str,
+    ) -> Result<SavedProfile, SyncError> {
+        let name = name.trim();
+        if name.is_empty()
+            || name.chars().count() > 80
+            || name.chars().any(char::is_control)
+            || source_root.is_empty()
+            || destination_root.is_empty()
+        {
+            return Err(SyncError::new(
+                SyncErrorCode::InvalidInput,
+                "A profile needs a name of 1–80 characters and two folder paths.",
+            ));
+        }
+
+        self.connection
+            .execute(
+                "INSERT INTO profiles (name, source_root, destination_root, updated_ms)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(name) DO UPDATE SET
+                    name = excluded.name,
+                    source_root = excluded.source_root,
+                    destination_root = excluded.destination_root,
+                    updated_ms = excluded.updated_ms",
+                params![name, source_root, destination_root, now_ms()],
+            )
+            .map_err(db_error)?;
+        self.connection
+            .query_row(
+                "SELECT id, name, source_root, destination_root, updated_ms
+                 FROM profiles WHERE name = ?1",
+                [name],
+                profile_from_row,
+            )
+            .map_err(db_error)
+    }
+
+    pub fn list_profiles(&self) -> Result<Vec<SavedProfile>, SyncError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT id, name, source_root, destination_root, updated_ms
+                 FROM profiles ORDER BY name COLLATE NOCASE, id",
+            )
+            .map_err(db_error)?;
+        let profiles = statement
+            .query_map([], profile_from_row)
+            .map_err(db_error)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(db_error)?;
+        Ok(profiles)
+    }
+
+    pub fn delete_profile(&mut self, profile_id: i64) -> Result<(), SyncError> {
+        let deleted = self
+            .connection
+            .execute("DELETE FROM profiles WHERE id = ?1", [profile_id])
+            .map_err(db_error)?;
+        if deleted == 0 {
+            return Err(SyncError::new(
+                SyncErrorCode::InvalidInput,
+                "The saved profile no longer exists.",
+            ));
+        }
+        Ok(())
     }
 
     pub fn record_scan(
@@ -736,6 +848,66 @@ impl Store {
         }
         Ok(runs)
     }
+
+    pub fn list_run_history(&self, limit: usize) -> Result<Vec<RunHistoryEntry>, SyncError> {
+        let limit = i64::try_from(limit.min(200)).unwrap_or(200);
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT runs.run_id, runs.source_root, runs.destination_root, runs.status,
+                        runs.started_ms, runs.finished_ms, COUNT(run_items.item_id),
+                        COALESCE(SUM(run_items.state = 'done'), 0),
+                        COALESCE(SUM(run_items.bytes_written), 0), runs.error
+                 FROM runs LEFT JOIN run_items ON run_items.run_id = runs.run_id
+                 GROUP BY runs.run_id
+                 ORDER BY runs.started_ms DESC, runs.run_id DESC
+                 LIMIT ?1",
+            )
+            .map_err(db_error)?;
+        let rows = statement
+            .query_map([limit], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, i64>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
+                    row.get::<_, i64>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, Option<String>>(9)?,
+                ))
+            })
+            .map_err(db_error)?;
+        rows.map(|row| {
+            let (
+                run_id,
+                source_root,
+                destination_root,
+                status,
+                started_ms,
+                finished_ms,
+                total_items,
+                done_items,
+                bytes_written,
+                error,
+            ) = row.map_err(db_error)?;
+            Ok(RunHistoryEntry {
+                run_id,
+                source_root,
+                destination_root,
+                status: parse_enum(&status)?,
+                started_ms: started_ms.max(0) as u64,
+                finished_ms: finished_ms.map(|value| value.max(0) as u64),
+                total_items: total_items.max(0) as u64,
+                done_items: done_items.max(0) as u64,
+                bytes_written: bytes_written.max(0) as u64,
+                error,
+            })
+        })
+        .collect()
+    }
 }
 
 fn now_ms() -> i64 {
@@ -770,6 +942,16 @@ fn parse_enum<T: DeserializeOwned>(text: &str) -> Result<T, SyncError> {
             SyncErrorCode::StoreUnavailable,
             "The local database contains an unrecognized value.",
         )
+    })
+}
+
+fn profile_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SavedProfile> {
+    Ok(SavedProfile {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        source_root: row.get(2)?,
+        destination_root: row.get(3)?,
+        updated_ms: row.get(4)?,
     })
 }
 
@@ -843,6 +1025,63 @@ mod tests {
             .pragma_update(None, "user_version", MIGRATIONS.len() + 1)
             .unwrap();
         assert!(Store::open(&fixture.db).is_err());
+    }
+
+    #[test]
+    fn saved_profiles_validate_upsert_case_insensitively_and_delete() {
+        let fixture = fixture();
+        let mut store = Store::open(&fixture.db).unwrap();
+        let first = store
+            .save_profile("  Music  ", "C:\\Music", "D:\\Backup")
+            .unwrap();
+        let updated = store
+            .save_profile("music", "E:\\Music", "F:\\Backup")
+            .unwrap();
+        assert_eq!(first.id, updated.id);
+        assert_eq!(updated.name, "music");
+        assert_eq!(updated.source_root, "E:\\Music");
+        assert_eq!(store.list_profiles().unwrap(), vec![updated.clone()]);
+
+        assert!(store.save_profile(" ", "C:\\Music", "D:\\Backup").is_err());
+        assert!(
+            store
+                .save_profile(&"x".repeat(81), "C:\\Music", "D:\\Backup")
+                .is_err()
+        );
+        assert!(
+            store
+                .save_profile("Missing destination", "C:\\Music", "")
+                .is_err()
+        );
+
+        store.delete_profile(updated.id).unwrap();
+        assert!(store.list_profiles().unwrap().is_empty());
+        assert!(store.delete_profile(updated.id).is_err());
+    }
+
+    #[test]
+    fn run_history_is_bounded_and_includes_summary_counts() {
+        let fixture = fixture();
+        let mut store = Store::open(&fixture.db).unwrap();
+        let items: Vec<_> = fixture.plan.items.iter().collect();
+        store
+            .begin_run(
+                "history-run",
+                None,
+                &fixture.plan,
+                &items,
+                Path::new("journal"),
+                Path::new("snapshot"),
+            )
+            .unwrap();
+
+        let history = store.list_run_history(usize::MAX).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].run_id, "history-run");
+        assert_eq!(history[0].status, RunStatus::Running);
+        assert_eq!(history[0].total_items, items.len() as u64);
+        assert_eq!(history[0].done_items, 0);
+        assert!(store.list_run_history(0).unwrap().is_empty());
     }
 
     #[test]

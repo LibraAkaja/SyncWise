@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { AlertTriangle, ArrowLeft, CheckCircle2, RotateCw, X } from "lucide-react";
 import type { RunSummary } from "./types/generated/RunSummary";
 import { formatBytes } from "./Review";
+import ThemeControl, { type ThemePreference } from "./ThemeControl";
 
 export type SyncProgressEvent = {
   runId: string; itemId: string; path: string; itemBytes: number; itemTotal: number;
@@ -20,7 +21,10 @@ const statusText: Record<RunSummary["status"], string> = {
   cancelled: "Cancelled", abandoned: "Dismissed",
 };
 
-export default function Execution({ runId, onClose }: { runId: string; onClose: () => void }) {
+export default function Execution({ runId, onClose, theme, onThemeChange }: {
+  runId: string; onClose: () => void; theme?: ThemePreference;
+  onThemeChange?: (theme: ThemePreference) => void;
+}) {
   const [currentRun, setCurrentRun] = useState(runId);
   const [progress, setProgress] = useState<SyncProgressEvent | null>(null);
   const [summary, setSummary] = useState<RunSummary | null>(null);
@@ -84,7 +88,7 @@ export default function Execution({ runId, onClose }: { runId: string; onClose: 
   const failed = summary ? summary.attentionItems : [];
 
   return <main className="review-page execution-page">
-    <header className="review-header"><div className="review-title"><div><p className="eyebrow">SYNCWISE</p><h1>{running ? "Copying files" : "Sync report"}</h1></div></div></header>
+    <header className="review-header"><div className="review-title"><div><p className="eyebrow">SYNCWISE</p><h1>{running ? "Copying files" : "Sync report"}</h1></div></div><ThemeControl value={theme ?? "system"} onChange={onThemeChange ?? (() => {})} /></header>
     {error && <p className="review-error" role="alert">{error}</p>}
     {running && <section className="execution-panel" aria-label="Sync progress">
       <progress max={100} value={percent} aria-label="Overall progress" />

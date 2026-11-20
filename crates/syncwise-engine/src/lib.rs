@@ -21,12 +21,12 @@ pub use copier::{
     run_snapshot_path,
 };
 mod store;
-pub use store::{RunItemSummary, RunStatus, RunSummary, Store};
+pub use store::{RunHistoryEntry, RunItemSummary, RunStatus, RunSummary, SavedProfile, Store};
 mod matching;
 pub use matching::{
     CandidateMatch, FileMatches, HashEvidence, MatchGroup, MatchLabel, MatchingOptions,
-    MatchingReport, match_files, match_files_with_cancellation, match_scan_files_with_cancellation,
-    normalize_title,
+    MatchingReport, WithinSideDuplicateGroup, WithinSideDuplicateReport, match_files,
+    match_files_with_cancellation, match_scan_files_with_cancellation, normalize_title,
 };
 mod review;
 pub use review::{DecisionChange, DecisionState, ReviewPreflight, ReviewSession};
@@ -655,6 +655,8 @@ mod tests {
         Plan::export_all_to(&output_directory).unwrap();
         MatchingOptions::export_all_to(&output_directory).unwrap();
         MatchingReport::export_all_to(&output_directory).unwrap();
+        WithinSideDuplicateGroup::export_all_to(&output_directory).unwrap();
+        WithinSideDuplicateReport::export_all_to(&output_directory).unwrap();
         AudioMetadata::export_all_to(&output_directory).unwrap();
         HashEvidence::export_all_to(&output_directory).unwrap();
         DecisionChange::export_all_to(&output_directory).unwrap();
@@ -668,6 +670,7 @@ mod tests {
         CopyReport::export_all_to(&output_directory).unwrap();
         RecoveryReport::export_all_to(&output_directory).unwrap();
         RunSummary::export_all_to(&output_directory).unwrap();
+        RunHistoryEntry::export_all_to(&output_directory).unwrap();
         Decision::export_all_to(&output_directory).unwrap();
         RunState::export_all_to(&output_directory).unwrap();
         SyncError::export_all_to(&output_directory).unwrap();

@@ -26,7 +26,7 @@ beforeEach(() => { vi.mocked(invoke).mockReset(); });
 
 function fixture(count: number, duplicate = false): Plan {
   const items = Array.from({ length: count }, (_, index) => ({ id: `item-${index}`, sourceRelativePath: `file-${String(index).padStart(5, "0")}.txt`, destinationRelativePath: `file-${index}.txt`, sizeBytes: 123, sourceModifiedTimeUnixMs: 1, kind: "copy" as const, reason: null }));
-  const plan: Plan = { id: "plan-test", sourceRoot: "C:\\Source", destinationRoot: "D:\\Destination", items, issues: [], requiredBytes: count * 123, availableBytes: 10_000_000, canExecute: true, matching: { matches: [], groups: [], candidateComparisons: 0, postingListsTruncated: false } };
+  const plan: Plan = { id: "plan-test", sourceRoot: "C:\\Source", destinationRoot: "D:\\Destination", items, issues: [], requiredBytes: count * 123, availableBytes: 10_000_000, canExecute: true, matching: { matches: [], groups: [], withinSideDuplicates: { source: [], destination: [], unavailableFiles: 0 }, candidateComparisons: 0, postingListsTruncated: false } };
   if (duplicate) {
     plan.items.push({ id: "duplicate", sourceRelativePath: "Song - Artist.mp3", destinationRelativePath: "Song - Artist.mp3", sizeBytes: 123, sourceModifiedTimeUnixMs: 1, kind: "possible_duplicate", reason: "Review this match." });
     plan.matching!.matches.push({ sourceRelativePath: "Song - Artist.mp3", candidates: [{ destinationRelativePath: "Artist - Song.mp3", score: 1, titleSimilarity: 1, artistSimilarity: 1, sizePlausibility: 1, label: "likely_same_song", reasons: ["No hashes or audio duration evidence."], suggested: true }] });
@@ -67,6 +67,38 @@ function connect(plan: Plan, blocked = false) {
 }
 
 describe("Review", () => {
+  it("filters by decision and displays exact within-side duplicate groups", async () => {
+    const user = userEvent.setup();
+    const plan = fixture(2);
+    plan.matching!.withinSideDuplicates.source.push({
+      sizeBytes: 123,
+      relativePaths: Array.from({ length: 205 }, (_, index) => `copy-${index}.txt`),
+    });
+    const initial = connect(plan);
+    initial.choices["item-0"] = "reject";
+    render(<Review plan={plan} initialDecisions={initial} onBack={vi.fn()} onStarted={vi.fn()} />);
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Filter by decision" }), "reject");
+    expect(screen.getByRole("table", { name: "File comparison" })).toHaveAttribute("aria-rowcount", "2");
+    expect(screen.getByText("file-00000.txt")).toBeInTheDocument();
+    expect(screen.queryByText("file-00001.txt")).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Within-side duplicates/ }));
+    expect(screen.getByRole("table", { name: "Within-side duplicate files" })).toBeInTheDocument();
+    expect(screen.getByText("copy-0.txt")).toBeInTheDocument();
+    expect(screen.getByText("Exact duplicates within each folder")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Next files" }));
+    expect(screen.getByText("copy-100.txt")).toBeInTheDocument();
+  });
+
+  it("announces when no within-side duplicates are found", async () => {
+    const user = userEvent.setup();
+    const plan = fixture(0);
+    render(<Review plan={plan} initialDecisions={connect(plan)} onBack={vi.fn()} onStarted={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: /Within-side duplicates/ }));
+    expect(screen.getByText("No exact within-side duplicates were found.")).toBeInTheDocument();
+  });
+
   it("keeps 20,000 rows virtual and supports keyboard selection and bulk missing approval", async () => {
     const user = userEvent.setup(); const plan = fixture(20_000);
     render(<Review plan={plan} initialDecisions={connect(plan)} onBack={vi.fn()} onStarted={vi.fn()} />);
