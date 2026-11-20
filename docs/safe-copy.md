@@ -75,3 +75,5 @@ The automated checks do not certify physical power-loss behavior or a removable 
 5. Verify completed files were not recopied, remaining source/destination hashes match, and the source tree is unchanged.
 
 If the mount path/drive letter changes, restore the original root before resume; automatic drive identity remapping is not implemented. Metadata revalidation is not a content hash and cannot detect same-size edits that deliberately preserve timestamps. Hostile concurrent directory/link swaps and full machine power-cut durability are not certified by this test suite. Real-drive testing and broader platform hardening remain release gates.
+
+For the complete desktop, filesystem, performance, and installer checklist with evidence fields, see [Windows Release Validation Matrix](./release-validation.md). All physical-device and manual cases remain **Not run** until tested on the intended hardware.
