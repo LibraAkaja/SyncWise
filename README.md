@@ -57,7 +57,7 @@ cargo test -p syncwise-engine --test matching_corpus -- --nocapture
 
 Large scan and matching performance checks are opt-in ignored tests; see [docs/matching.md](./docs/matching.md). See [docs/release-validation.md](./docs/release-validation.md) for the manual validation matrix. Do not mark hardware or manual cases passed until they have been run and their evidence recorded.
 
-## Release testing
+## Release testing (Contributions are welcomed)
 
 Before an official release, every item in [docs/release-test-plan.md](./docs/release-test-plan.md) must pass. In short:
 
