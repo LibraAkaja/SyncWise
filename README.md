@@ -57,6 +57,18 @@ cargo test -p syncwise-engine --test matching_corpus -- --nocapture
 
 Large scan and matching performance checks are opt-in ignored tests; see [docs/matching.md](./docs/matching.md). See [docs/release-validation.md](./docs/release-validation.md) for the manual validation matrix. Do not mark hardware or manual cases passed until they have been run and their evidence recorded.
 
+## Release testing
+
+Before an official release, every item in [docs/release-test-plan.md](./docs/release-test-plan.md) must pass. In short:
+
+1. Automated gate: fmt, clippy, Rust and frontend tests, and the matching corpus.
+2. Safety checks: no overwrite, late destination conflicts, `NeedsRescan`, interrupted copies, drive removal, an untouched source, hostile filenames, and no network use.
+3. Hardware: unplug tests on NTFS and exFAT drives.
+4. Performance: 20k-file scan and matching, memory, cancel latency and copy throughput.
+5. Installer: a build and click-through on a clean Windows VM.
+
+Record results in [docs/release-validation.md](./docs/release-validation.md).
+
 ## Matching and privacy
 
 Candidate matches and audio tags are advisory, not proof of identity. Exact content identity is established only by equal full BLAKE3 hashes for files actually compared; candidate retrieval does not compare every possible pair. Matching limitations and corpus results are documented in [docs/matching.md](./docs/matching.md).
