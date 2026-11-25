@@ -69,6 +69,12 @@ Before an official release, every item in [docs/release-test-plan.md](./docs/rel
 
 Record results in [docs/release-validation.md](./docs/release-validation.md).
 
+## Open source and contributing
+
+SyncWise is free and open-source software released under the [MIT License](./LICENSE). You may use, modify and redistribute it, including commercially, as long as the copyright and license notice are kept. It is provided without warranty, so keep independent backups of important data.
+
+Contributions are welcome. Open an issue to discuss larger changes, run the [development checks](#development-checks) before submitting a pull request, and keep the safety model intact: no source deletion, no destination replacement, and no score-only copy decisions. By contributing, you agree that your contribution is licensed under the MIT License.
+
 ## Matching and privacy
 
 Candidate matches and audio tags are advisory, not proof of identity. Exact content identity is established only by equal full BLAKE3 hashes for files actually compared; candidate retrieval does not compare every possible pair. Matching limitations and corpus results are documented in [docs/matching.md](./docs/matching.md).
